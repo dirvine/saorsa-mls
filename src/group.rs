@@ -169,7 +169,7 @@ impl MlsGroup {
         let mut nonce = Vec::with_capacity(self.config.cipher_suite.nonce_size());
         nonce.extend_from_slice(&self.current_epoch().to_be_bytes()[..4]); // 4 bytes
         nonce.extend_from_slice(&sequence.to_be_bytes()); // 8 bytes
-        let aad = self.create_application_aad_with_seq(sequence)?;
+        let aad = self.create_application_aad_with_seq_sender(sequence, self.creator.id);
         let ciphertext = cipher.encrypt(&nonce, plaintext, &aad)?;
 
         // Combine nonce + ciphertext for wire format
@@ -217,7 +217,7 @@ impl MlsGroup {
         }
 
         let (nonce, ciphertext) = message.ciphertext.split_at(nonce_size);
-        let aad = self.create_application_aad_with_seq(message.sequence)?;
+        let aad = self.create_application_aad_with_seq_sender(message.sequence, message.sender);
 
         let plaintext = cipher.decrypt(nonce, ciphertext, &aad)?;
 
@@ -420,17 +420,18 @@ impl MlsGroup {
         })
     }
 
-    fn create_application_aad(&self) -> Result<Vec<u8>> {
+    fn create_application_aad(&self) -> Vec<u8> {
         let mut aad = Vec::new();
         aad.extend_from_slice(&self.group_id.0);
         aad.extend_from_slice(&self.current_epoch().to_be_bytes());
-        Ok(aad)
+        aad
     }
 
-    fn create_application_aad_with_seq(&self, sequence: u64) -> Result<Vec<u8>> {
-        let mut aad = self.create_application_aad()?;
+    fn create_application_aad_with_seq_sender(&self, sequence: u64, sender: MemberId) -> Vec<u8> {
+        let mut aad = self.create_application_aad();
         aad.extend_from_slice(&sequence.to_be_bytes());
-        Ok(aad)
+        aad.extend_from_slice(sender.0.as_bytes());
+        aad
     }
 }
 

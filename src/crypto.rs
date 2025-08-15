@@ -11,6 +11,8 @@ use chacha20poly1305::{
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use hkdf::Hkdf;
+use hmac::{Hmac, Mac};
+type HmacSha256 = Hmac<Sha256>;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -81,17 +83,13 @@ impl Hash {
         }
     }
 
-    /// Compute HMAC
+    /// Compute HMAC-SHA256 tag over data using key
     pub fn hmac(&self, key: &[u8], data: &[u8]) -> Vec<u8> {
         match self.suite {
             CipherSuite::Ed25519ChaCha20Poly1305Blake3 => {
-                let hkdf = Hkdf::<Sha256>::new(None, key);
-                let mut output = vec![0u8; 32];
-                if hkdf.expand(data, &mut output).is_ok() {
-                    output
-                } else {
-                    vec![]
-                }
+                let mut mac = <HmacSha256 as Mac>::new_from_slice(key).expect("HMAC key length");
+                mac.update(data);
+                mac.finalize().into_bytes().to_vec()
             }
         }
     }
@@ -325,6 +323,26 @@ pub mod labels {
     pub const MEMBERSHIP_KEY: &[u8] = b"MLS 1.0 membership key";
     pub const RESUMPTION_PSK: &[u8] = b"MLS 1.0 resumption psk";
     pub const INIT_SECRET: &[u8] = b"MLS 1.0 init secret";
+}
+
+/// Secret byte buffer that zeroizes on drop
+#[derive(Clone)]
+pub struct SecretBytes(pub Vec<u8>);
+
+impl Drop for SecretBytes {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.0.zeroize();
+    }
+}
+
+impl SecretBytes {
+    pub fn as_slice(&self) -> &[u8] { &self.0 }
+    pub fn to_vec(&self) -> Vec<u8> { self.0.clone() }
+}
+
+impl From<Vec<u8>> for SecretBytes {
+    fn from(v: Vec<u8>) -> Self { SecretBytes(v) }
 }
 
 #[cfg(test)]
