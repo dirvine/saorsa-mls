@@ -142,6 +142,7 @@ impl MlsGroup {
 
         // Create welcome message (no locks held)
         let welcome = WelcomeMessage {
+            schema_version: 1,
             group_id: self.group_id,
             epoch: self.current_epoch(),
             sender: self.creator.id,
@@ -226,6 +227,7 @@ impl MlsGroup {
         wire_ciphertext.extend_from_slice(&ciphertext);
 
         let message = ApplicationMessage {
+            schema_version: 1,
             group_id: self.group_id,
             epoch: self.current_epoch(),
             sender: self.creator.id,

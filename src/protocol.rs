@@ -54,6 +54,8 @@ impl MlsMessage {
 /// Handshake message for group management operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandshakeMessage {
+    /// Wire schema version
+    pub schema_version: u16,
     /// Group identifier
     pub group_id: GroupId,
     /// Current epoch number
@@ -64,6 +66,8 @@ pub struct HandshakeMessage {
     pub sequence: MessageSequence,
     /// Handshake content
     pub content: Vec<u8>,
+    /// Confirmation tag binding to transcript
+    pub confirmation_tag: Vec<u8>,
     /// Digital signature
     pub signature: Signature,
     /// Timestamp
@@ -73,6 +77,8 @@ pub struct HandshakeMessage {
 /// Application message with encrypted payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplicationMessage {
+    /// Wire schema version
+    pub schema_version: u16,
     /// Group identifier
     pub group_id: GroupId,
     /// Current epoch number
@@ -92,6 +98,8 @@ pub struct ApplicationMessage {
 /// Welcome message for new group members
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WelcomeMessage {
+    /// Wire schema version
+    pub schema_version: u16,
     /// Group identifier
     pub group_id: GroupId,
     /// Epoch when member was added
@@ -488,6 +496,7 @@ mod tests {
     #[test]
     fn test_message_frame() {
         let app_msg = ApplicationMessage {
+            schema_version: 1,
             group_id: GroupId::generate(),
             epoch: 1,
             sender: MemberId::generate(),
@@ -533,11 +542,13 @@ mod tests {
         let epoch = 42;
 
         let handshake = MlsMessage::Handshake(HandshakeMessage {
+            schema_version: 1,
             group_id,
             epoch,
             sender,
             sequence: 1,
             content: vec![],
+            confirmation_tag: vec![],
             signature: Signature::from_bytes(&[0u8; 64]),
             timestamp: SystemTime::now(),
         });
