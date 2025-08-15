@@ -5,7 +5,7 @@
 
 use crate::{MlsError, Result, crypto::*};
 use bincode::Options;
-use ed25519_dalek::{Signature, VerifyingKey};
+use ed25519_dalek::{Signature, SigningKey, VerifyingKey, Signer, Verifier};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
@@ -49,7 +49,7 @@ impl MemberIdentity {
     pub fn generate() -> Result<Self> {
         let id = MemberId::generate();
         let keypair = KeyPair::generate(CipherSuite::default());
-        let credential = Credential::new_basic(id, None)?;
+        let credential = Credential::new_basic(id, None, &keypair.signing_key, keypair.suite)?;
         let key_package = KeyPackage::new(keypair, credential.clone())?;
 
         Ok(Self {
@@ -64,8 +64,12 @@ impl MemberIdentity {
     /// Create identity with display name
     pub fn with_name(name: String) -> Result<Self> {
         let mut identity = Self::generate()?;
+        let suite = identity.key_package.cipher_suite;
+        // We do not have the signing key here; regenerate fresh keys and key package
+        let keypair = KeyPair::generate(suite);
         identity.name = Some(name.clone());
-        identity.credential = Credential::new_basic(identity.id, Some(name))?;
+        identity.credential = Credential::new_basic(identity.id, Some(name), &keypair.signing_key, suite)?;
+        identity.key_package = KeyPackage::new(keypair, identity.credential.clone())?;
         Ok(identity)
     }
 
@@ -107,12 +111,33 @@ pub enum Credential {
 }
 
 impl Credential {
-    /// Create a new basic credential
-    pub fn new_basic(member_id: MemberId, name: Option<String>) -> Result<Self> {
-        let identity = name.unwrap_or_else(|| member_id.to_string()).into_bytes();
+    /// Create and sign a new basic credential
+    pub fn new_basic(
+        member_id: MemberId,
+        name: Option<String>,
+        signing_key: &SigningKey,
+        suite: CipherSuite,
+    ) -> Result<Self> {
+        // Canonical payload: version, suite, UUID bytes, optional name
+        #[derive(Serialize)]
+        struct CredPayload<'a> {
+            version: u16,
+            suite: CipherSuite,
+            member_id: [u8; 16],
+            name: Option<&'a str>,
+        }
+        let payload = CredPayload {
+            version: crate::MLS_VERSION,
+            suite,
+            member_id: *member_id.0.as_bytes(),
+            name: name.as_deref(),
+        };
+        let opts = bincode::DefaultOptions::new().with_limit(1_048_576);
+        let identity = opts
+            .serialize(&payload)
+            .map_err(|e| MlsError::SerializationError(e.to_string()))?;
 
-        // Placeholder signature for now (will be replaced when signing with real keypair is wired)
-        let signature = Signature::from_bytes(&[0u8; 64]);
+        let signature = signing_key.sign(&identity);
 
         Ok(Self::Basic {
             member_id,
@@ -176,6 +201,11 @@ impl KeyPackage {
     pub fn new(keypair: KeyPair, credential: Credential) -> Result<Self> {
         let now = SystemTime::now();
         let expires_at = Some(now + Duration::from_secs(30 * 24 * 3600)); // 30 days
+
+        // Verify the credential against the provided verifying key
+        if !credential.verify(&keypair.verifying_key()) {
+            return Err(MlsError::InvalidGroupState("invalid credential signature".to_string()));
+        }
 
         let mut package = Self {
             version: crate::MLS_VERSION,
@@ -414,7 +444,7 @@ mod tests {
     #[test]
     fn test_key_package_creation() {
         let keypair = KeyPair::generate(CipherSuite::default());
-        let credential = Credential::new_basic(MemberId::generate(), Some("Test".to_string())).unwrap();
+        let credential = Credential::new_basic(MemberId::generate(), Some("Test".to_string()), &keypair.signing_key, keypair.suite).unwrap();
 
         let package = KeyPackage::new(keypair, credential).unwrap();
         assert_eq!(package.version, crate::MLS_VERSION);
@@ -464,7 +494,8 @@ mod tests {
     #[test]
     fn test_credential_member_id() {
         let id = MemberId::generate();
-        let credential = Credential::new_basic(id, None).unwrap();
+        let kp = KeyPair::generate(CipherSuite::default());
+        let credential = Credential::new_basic(id, None, &kp.signing_key, kp.suite).unwrap();
 
         assert_eq!(credential.member_id(), id);
     }

@@ -509,10 +509,9 @@ mod tests {
     #[test]
     fn test_proposal_types() {
         let member_id = MemberId::generate();
-        let key_package = KeyPackage::new(
-            KeyPair::generate(CipherSuite::default()),
-            Credential::new_basic(member_id, None).unwrap(),
-        )
+        let keypair = KeyPair::generate(CipherSuite::default());
+        let cred = Credential::new_basic(member_id, None, &keypair.signing_key, keypair.suite).unwrap();
+        let key_package = KeyPackage::new(keypair, cred)
         .unwrap();
 
         let add_proposal = Proposal::Add {
