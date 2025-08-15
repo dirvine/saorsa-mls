@@ -432,7 +432,10 @@ pub struct GroupId(pub [u8; 32]);
 impl GroupId {
     /// Generate a new random group ID
     pub fn generate() -> Self {
-        Self(random_bytes(32).try_into().unwrap())
+        let bytes = random_bytes(32);
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Self(arr)
     }
 }
 
