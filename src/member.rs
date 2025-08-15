@@ -50,8 +50,10 @@ impl MemberIdentity {
         let id = MemberId::generate();
         let keypair = KeyPair::generate(CipherSuite::default());
         let credential = Credential::new_basic(id, None);
-        let key_package =
-            KeyPackage::new(keypair, credential.clone()).expect("failed to create key package");
+        let key_package = match KeyPackage::new(keypair, credential.clone()) {
+            Ok(kp) => kp,
+            Err(e) => panic!("failed to create key package: {}", e),
+        };
 
         Self {
             id,
