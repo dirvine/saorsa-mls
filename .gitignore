@@ -1,0 +1,10 @@
+# Rust build artifacts
+/target/
+
+# For library crates, don't commit Cargo.lock
+Cargo.lock
+
+# IDE/editor artifacts
+.idea/
+.vscode/
+.DS_Store

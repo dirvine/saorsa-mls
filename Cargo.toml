@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 authors = ["Saorsa Labs Limited <saorsalabs@gmail.com>"]
 license = "AGPL-3.0"
-description = "Message Layer Security (MLS) protocol implementation for P2P secure group communication"
+description = "Experimental Message Layer Security (MLS)-inspired library for P2P secure group communication"
 repository = "https://github.com/dirvine/saorsa-mls-foundation"
 homepage = "https://github.com/dirvine/saorsa-mls-foundation"
 documentation = "https://docs.rs/saorsa-mls"
@@ -39,8 +39,8 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1.35", features = ["full"] }
 async-trait = "0.1"
 
-# Logging
-tracing = "0.1"
+## Logging (not currently used)
+# tracing = "0.1"
 
 # Data structures
 dashmap = "6.0"
