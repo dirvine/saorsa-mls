@@ -228,6 +228,8 @@ pub struct GroupInfo {
 pub struct MessageFrame {
     /// Protocol version
     pub version: u16,
+    /// Wire schema version
+    pub schema_version: u16,
     /// Wire format
     pub wire_format: crate::WireFormat,
     /// Message content
@@ -243,6 +245,7 @@ impl MessageFrame {
 
         Self {
             version: crate::MLS_VERSION,
+            schema_version: 1,
             wire_format: crate::WireFormat::default(),
             content,
             frame_size: serialized_size,

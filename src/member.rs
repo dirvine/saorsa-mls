@@ -5,7 +5,7 @@
 
 use crate::{MlsError, Result, crypto::*};
 use bincode::Options;
-use ed25519_dalek::{Signature, SigningKey, VerifyingKey, Signer, Verifier};
+use ed25519_dalek::{Signature, SigningKey, VerifyingKey, Signer};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
