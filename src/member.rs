@@ -4,6 +4,7 @@
 //! Member identity and authentication for MLS groups
 
 use crate::{MlsError, Result, crypto::*};
+use bincode::Options;
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -49,7 +50,8 @@ impl MemberIdentity {
         let id = MemberId::generate();
         let keypair = KeyPair::generate(CipherSuite::default());
         let credential = Credential::new_basic(id, None);
-        let key_package = KeyPackage::new(keypair, credential.clone()).unwrap();
+        let key_package =
+            KeyPackage::new(keypair, credential.clone()).expect("failed to create key package");
 
         Self {
             id,
@@ -214,16 +216,24 @@ impl KeyPackage {
         // Simplified serialization for signing
         let mut data = Vec::new();
         data.extend_from_slice(&self.version.to_be_bytes());
-        data.extend_from_slice(
-            &bincode::serialize(&self.cipher_suite)
-                .map_err(|e| MlsError::SerializationError(e.to_string()))?,
-        );
+        {
+            let opts = bincode::DefaultOptions::new().with_limit(1_048_576);
+            data.extend_from_slice(
+                &opts
+                    .serialize(&self.cipher_suite)
+                    .map_err(|e| MlsError::SerializationError(e.to_string()))?,
+            );
+        }
         data.extend_from_slice(&self.verifying_key.to_bytes());
         data.extend_from_slice(self.agreement_key.as_bytes());
-        data.extend_from_slice(
-            &bincode::serialize(&self.credential)
-                .map_err(|e| MlsError::SerializationError(e.to_string()))?,
-        );
+        {
+            let opts = bincode::DefaultOptions::new().with_limit(1_048_576);
+            data.extend_from_slice(
+                &opts
+                    .serialize(&self.credential)
+                    .map_err(|e| MlsError::SerializationError(e.to_string()))?,
+            );
+        }
         Ok(data)
     }
 }

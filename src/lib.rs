@@ -1,6 +1,9 @@
 // Copyright 2024 Saorsa Labs
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+#![forbid(unsafe_code)]
+#![warn(clippy::all, rust_2018_idioms)]
+
 //! # Saorsa MLS - Message Layer Security Protocol
 //!
 //! This crate implements the Message Layer Security (MLS) protocol for secure group communication

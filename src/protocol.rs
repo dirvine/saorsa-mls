@@ -4,6 +4,7 @@
 //! MLS protocol messages and state machine
 
 use crate::{EpochNumber, MessageSequence, MlsError, Result, crypto::*, member::*};
+use bincode::Options;
 use ed25519_dalek::Signature;
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
@@ -250,12 +251,16 @@ impl MessageFrame {
 
     /// Serialize the frame for transmission
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        bincode::serialize(self).map_err(|e| MlsError::SerializationError(e.to_string()))
+        let cfg = bincode::DefaultOptions::new().with_limit(1_048_576);
+        cfg.serialize(self)
+            .map_err(|e| MlsError::SerializationError(e.to_string()))
     }
 
     /// Deserialize frame from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        bincode::deserialize(data).map_err(|e| MlsError::SerializationError(e.to_string()))
+        let cfg = bincode::DefaultOptions::new().with_limit(1_048_576);
+        cfg.deserialize(data)
+            .map_err(|e| MlsError::SerializationError(e.to_string()))
     }
 }
 

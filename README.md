@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/saorsa-mls.svg)](https://crates.io/crates/saorsa-mls)
 [![Documentation](https://docs.rs/saorsa-mls/badge.svg)](https://docs.rs/saorsa-mls)
-[![CI](https://github.com/dirvine/saorsa-mls-foundation/workflows/CI/badge.svg)](https://github.com/dirvine/saorsa-mls-foundation/actions)
+[![CI](https://github.com/dirvine/saorsa-mls/actions/workflows/ci.yml/badge.svg)](https://github.com/dirvine/saorsa-mls/actions)
 
 Experimental Message Layer Security (MLS)-inspired library for P2P secure group communication.
 
@@ -117,11 +117,11 @@ The implementation is optimized for:
 ## Security considerations
 
 This crate is not yet production-ready. Important limitations include:
-- Key agreement and TreeKEM are simplified; shared secret derivation is not equivalent to X25519 ECDH.
+- Key agreement and TreeKEM are simplified; TreeKEM path secrets are placeholder logic.
 - Signatures and credential handling are simplified in places; some signatures are placeholders in tests/examples.
-- Nonce uniqueness relies on randomness; there is no reuse detection.
-- Secrets are stored in memory as `Vec<u8>` without zeroization at drop.
-- Serialization uses `bincode` without strict length limits or versioning.
+- Nonce uniqueness previously relied on randomness; now derived from (epoch, sequence) but still lacks full MLS transcript binding.
+- Secrets are now zeroized where feasible, but not all paths are audited.
+- Serialization uses `bincode` with size limits; no versioning yet.
 
 Until these are addressed, treat this crate as a prototype for experimentation only.
 

@@ -4,6 +4,7 @@
 // Fixed version of group.rs that resolves deadlock issues
 
 use crate::{EpochNumber, MlsError, MlsStats, Result, crypto::*, member::*, protocol::*};
+use bincode::Options;
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use std::{
@@ -101,8 +102,11 @@ impl MlsGroup {
             group_id: self.group_id,
             epoch: self.current_epoch(),
             sender: self.creator.id,
-            group_info: bincode::serialize(&self.create_group_info()?)
-                .map_err(|e| MlsError::SerializationError(e.to_string()))?,
+            group_info: {
+                let opts = bincode::DefaultOptions::new().with_limit(1_048_576);
+                opts.serialize(&self.create_group_info()?)
+                    .map_err(|e| MlsError::SerializationError(e.to_string()))?
+            },
             new_members: vec![member_id],
             signature: self.creator.key_package.signature,
             timestamp: SystemTime::now(),
@@ -160,15 +164,17 @@ impl MlsGroup {
 
         let cipher = AeadCipher::new(sender_key, self.config.cipher_suite)?;
 
-        let nonce = random_bytes(self.config.cipher_suite.nonce_size());
-        let aad = self.create_application_aad()?;
+        // Nonce derived from epoch and sequence for uniqueness
+        let sequence = self.message_sequence.fetch_add(1, Ordering::SeqCst);
+        let mut nonce = Vec::with_capacity(self.config.cipher_suite.nonce_size());
+        nonce.extend_from_slice(&self.current_epoch().to_be_bytes()[..4]); // 4 bytes
+        nonce.extend_from_slice(&sequence.to_be_bytes()); // 8 bytes
+        let aad = self.create_application_aad_with_seq(sequence)?;
         let ciphertext = cipher.encrypt(&nonce, plaintext, &aad)?;
 
         // Combine nonce + ciphertext for wire format
         let mut wire_ciphertext = nonce;
         wire_ciphertext.extend_from_slice(&ciphertext);
-
-        let sequence = self.message_sequence.fetch_add(1, Ordering::SeqCst);
 
         let message = ApplicationMessage {
             group_id: self.group_id,
@@ -211,9 +217,20 @@ impl MlsGroup {
         }
 
         let (nonce, ciphertext) = message.ciphertext.split_at(nonce_size);
-        let aad = self.create_application_aad()?;
+        let aad = self.create_application_aad_with_seq(message.sequence)?;
 
         let plaintext = cipher.decrypt(nonce, ciphertext, &aad)?;
+
+        // Replay protection using per-member sequence number
+        {
+            let mut members = self.members.write();
+            if let Some(member) = members.get_member_mut(&message.sender) {
+                if message.sequence <= member.sequence_number {
+                    return Err(MlsError::ProtocolError("replay detected".to_string()));
+                }
+                member.sequence_number = message.sequence;
+            }
+        }
 
         // Update statistics with scoped lock
         {
@@ -407,6 +424,12 @@ impl MlsGroup {
         let mut aad = Vec::new();
         aad.extend_from_slice(&self.group_id.0);
         aad.extend_from_slice(&self.current_epoch().to_be_bytes());
+        Ok(aad)
+    }
+
+    fn create_application_aad_with_seq(&self, sequence: u64) -> Result<Vec<u8>> {
+        let mut aad = self.create_application_aad()?;
+        aad.extend_from_slice(&sequence.to_be_bytes());
         Ok(aad)
     }
 }

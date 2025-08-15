@@ -14,7 +14,7 @@ use hkdf::Hkdf;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, SharedSecret};
+use x25519_dalek::{PublicKey as X25519PublicKey, SharedSecret, ReusableSecret};
 
 /// Supported cipher suites for MLS
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,8 +87,11 @@ impl Hash {
             CipherSuite::Ed25519ChaCha20Poly1305Blake3 => {
                 let hkdf = Hkdf::<Sha256>::new(None, key);
                 let mut output = vec![0u8; 32];
-                hkdf.expand(data, &mut output).unwrap();
-                output
+                if hkdf.expand(data, &mut output).is_ok() {
+                    output
+                } else {
+                    vec![]
+                }
             }
         }
     }
@@ -141,12 +144,22 @@ impl KeySchedule {
 }
 
 /// Asymmetric key pair for signing and key agreement
-#[derive(Debug)]
 pub struct KeyPair {
     pub signing_key: SigningKey,
-    pub agreement_secret: Vec<u8>, // Store as bytes to avoid EphemeralSecret ownership issues
+    // Long-term X25519 secret suitable for multiple DH operations
+    agreement_secret: ReusableSecret,
     pub agreement_public: X25519PublicKey,
     pub suite: CipherSuite,
+}
+
+impl std::fmt::Debug for KeyPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyPair")
+            .field("signing_key", &"<hidden>")
+            .field("agreement_public", &self.agreement_public)
+            .field("suite", &self.suite)
+            .finish()
+    }
 }
 
 impl KeyPair {
@@ -154,11 +167,8 @@ impl KeyPair {
     pub fn generate(suite: CipherSuite) -> Self {
         let mut rng = OsRng;
         let signing_key = SigningKey::generate(&mut rng);
-        let agreement_secret_ephemeral = EphemeralSecret::random_from_rng(rng);
-        let agreement_public = X25519PublicKey::from(&agreement_secret_ephemeral);
-
-        // Convert to bytes for storage (simplified - in production would use proper key derivation)
-        let agreement_secret = random_bytes(32);
+        let agreement_secret = ReusableSecret::random_from_rng(rng);
+        let agreement_public = X25519PublicKey::from(&agreement_secret);
 
         Self {
             signing_key,
@@ -199,20 +209,7 @@ impl KeyPair {
 
     /// Perform Diffie-Hellman key agreement (simplified implementation)
     pub fn diffie_hellman(&self, their_public: &X25519PublicKey) -> SharedSecret {
-        // In production, would use the actual secret key
-        // For now, create a deterministic shared secret
-        let mut combined = Vec::new();
-        combined.extend_from_slice(&self.agreement_secret);
-        combined.extend_from_slice(their_public.as_bytes());
-
-        let hash = blake3::hash(&combined);
-        // Create SharedSecret from hash bytes (simplified implementation)
-        // In production, would use proper key derivation
-        let mut shared_bytes = [0u8; 32];
-        shared_bytes.copy_from_slice(hash.as_bytes());
-        let ephemeral = EphemeralSecret::random_from_rng(rand::rngs::OsRng);
-        // Return a dummy shared secret for compilation
-        ephemeral.diffie_hellman(&X25519PublicKey::from(shared_bytes))
+        self.agreement_secret.diffie_hellman(their_public)
     }
 }
 
