@@ -68,8 +68,6 @@ pub struct MlsGroup {
     key_schedule: Arc<RwLock<Option<KeySchedule>>>,
     // Per-sender send sequence numbers
     send_sequences: Arc<DashMap<MemberId, u64>>,
-    // Global sequence retained for backward compatibility (will be removed)
-    message_sequence: AtomicU64,
     protocol_state: Arc<RwLock<ProtocolStateMachine>>,
     stats: Arc<RwLock<MlsStats>>,
     secrets: Arc<DashMap<String, crate::crypto::SecretBytes>>,
@@ -96,7 +94,6 @@ impl MlsGroup {
             tree: Arc::new(RwLock::new(tree)),
             key_schedule: Arc::new(RwLock::new(None)),
             send_sequences: Arc::new(DashMap::new()),
-            message_sequence: AtomicU64::new(0),
             protocol_state: Arc::new(RwLock::new(ProtocolStateMachine::new(0))),
             stats: Arc::new(RwLock::new(MlsStats::default())),
             secrets: Arc::new(DashMap::new()),
