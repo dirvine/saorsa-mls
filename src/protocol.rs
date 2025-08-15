@@ -3,7 +3,7 @@
 
 //! MLS protocol messages and state machine
 
-use crate::{crypto::*, member::*, EpochNumber, MessageSequence, MlsError, Result};
+use crate::{EpochNumber, MessageSequence, MlsError, Result, crypto::*, member::*};
 use ed25519_dalek::Signature;
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
@@ -28,7 +28,7 @@ impl MlsMessage {
             Self::Welcome(msg) => msg.epoch,
         }
     }
-    
+
     /// Get the sender of this message
     pub fn sender(&self) -> MemberId {
         match self {
@@ -37,7 +37,7 @@ impl MlsMessage {
             Self::Welcome(msg) => msg.sender,
         }
     }
-    
+
     /// Verify the message signature
     pub fn verify_signature(&self, verifying_key: &ed25519_dalek::VerifyingKey) -> bool {
         let (data, signature) = match self {
@@ -45,7 +45,7 @@ impl MlsMessage {
             Self::Application(msg) => (&msg.ciphertext, &msg.signature),
             Self::Welcome(msg) => (&msg.group_info, &msg.signature),
         };
-        
+
         verifying_key.verify_strict(data, signature).is_ok()
     }
 }
@@ -143,7 +143,7 @@ impl Proposal {
             Self::PreSharedKey { proposer, .. } => *proposer,
         }
     }
-    
+
     /// Get the proposal type as a string
     pub fn proposal_type(&self) -> &'static str {
         match self {
@@ -239,7 +239,7 @@ impl MessageFrame {
     /// Create a new message frame
     pub fn new(content: MlsMessage) -> Self {
         let serialized_size = bincode::serialized_size(&content).unwrap_or(0) as u32;
-        
+
         Self {
             version: crate::MLS_VERSION,
             wire_format: crate::WireFormat::default(),
@@ -247,12 +247,12 @@ impl MessageFrame {
             frame_size: serialized_size,
         }
     }
-    
+
     /// Serialize the frame for transmission
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         bincode::serialize(self).map_err(|e| MlsError::SerializationError(e.to_string()))
     }
-    
+
     /// Deserialize frame from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         bincode::deserialize(data).map_err(|e| MlsError::SerializationError(e.to_string()))
@@ -277,11 +277,11 @@ impl ProtocolStateMachine {
             message_cache: Vec::new(),
         }
     }
-    
+
     /// Process an incoming MLS message
     pub fn process_message(&mut self, message: MlsMessage) -> Result<Vec<ProtocolEvent>> {
         let mut events = Vec::new();
-        
+
         // Validate epoch
         if message.epoch() < self.current_epoch {
             return Err(MlsError::InvalidEpoch {
@@ -289,7 +289,7 @@ impl ProtocolStateMachine {
                 actual: message.epoch(),
             });
         }
-        
+
         match message {
             MlsMessage::Handshake(handshake) => {
                 events.extend(self.process_handshake(handshake)?);
@@ -307,14 +307,14 @@ impl ProtocolStateMachine {
                 });
             }
         }
-        
+
         Ok(events)
     }
-    
+
     /// Process a handshake message
     fn process_handshake(&mut self, handshake: HandshakeMessage) -> Result<Vec<ProtocolEvent>> {
         let mut events = Vec::new();
-        
+
         // Parse handshake content (simplified)
         if let Ok(proposal) = bincode::deserialize::<Proposal>(&handshake.content) {
             self.pending_proposals.push(proposal.clone());
@@ -322,14 +322,14 @@ impl ProtocolStateMachine {
         } else if let Ok(commit) = bincode::deserialize::<Commit>(&handshake.content) {
             events.extend(self.process_commit(commit)?);
         }
-        
+
         Ok(events)
     }
-    
+
     /// Process a commit message
     fn process_commit(&mut self, commit: Commit) -> Result<Vec<ProtocolEvent>> {
         let mut events = Vec::new();
-        
+
         // Apply committed proposals
         for proposal in &commit.proposals {
             match proposal {
@@ -344,7 +344,10 @@ impl ProtocolStateMachine {
                         member_id: *member_id,
                     });
                 }
-                Proposal::Update { key_package, member_id } => {
+                Proposal::Update {
+                    key_package,
+                    member_id,
+                } => {
                     events.push(ProtocolEvent::MemberUpdated {
                         member_id: *member_id,
                         key_package: key_package.clone(),
@@ -355,29 +358,29 @@ impl ProtocolStateMachine {
                 }
             }
         }
-        
+
         // Clear pending proposals
         self.pending_proposals.clear();
-        
+
         // Advance epoch
         self.current_epoch = commit.epoch + 1;
         events.push(ProtocolEvent::EpochAdvanced {
             new_epoch: self.current_epoch,
         });
-        
+
         Ok(events)
     }
-    
+
     /// Get current epoch
     pub fn current_epoch(&self) -> EpochNumber {
         self.current_epoch
     }
-    
+
     /// Get pending proposals
     pub fn pending_proposals(&self) -> &[Proposal] {
         &self.pending_proposals
     }
-    
+
     /// Set current epoch (for group management)
     pub fn set_epoch(&mut self, epoch: EpochNumber) {
         self.current_epoch = epoch;
@@ -395,9 +398,7 @@ pub enum ProtocolEvent {
         key_package: KeyPackage,
     },
     /// A member was removed from the group
-    MemberRemoved {
-        member_id: MemberId,
-    },
+    MemberRemoved { member_id: MemberId },
     /// A member updated their key package
     MemberUpdated {
         member_id: MemberId,
@@ -406,9 +407,7 @@ pub enum ProtocolEvent {
     /// Pre-shared key was added
     PreSharedKeyAdded,
     /// Epoch advanced
-    EpochAdvanced {
-        new_epoch: EpochNumber,
-    },
+    EpochAdvanced { new_epoch: EpochNumber },
     /// Application message received
     ApplicationMessage {
         sender: MemberId,
@@ -465,16 +464,16 @@ impl Default for GroupConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_group_id_generation() {
         let id1 = GroupId::generate();
         let id2 = GroupId::generate();
-        
+
         assert_ne!(id1, id2);
         assert_ne!(id1.to_string(), id2.to_string());
     }
-    
+
     #[test]
     fn test_message_frame() {
         let app_msg = ApplicationMessage {
@@ -486,42 +485,43 @@ mod tests {
             signature: Signature::from_bytes(&[0u8; 64]),
             timestamp: SystemTime::now(),
         };
-        
+
         let frame = MessageFrame::new(MlsMessage::Application(app_msg));
         assert_eq!(frame.version, crate::MLS_VERSION);
         assert!(frame.frame_size > 0);
     }
-    
+
     #[test]
     fn test_protocol_state_machine() {
         let state = ProtocolStateMachine::new(0);
         assert_eq!(state.current_epoch(), 0);
         assert!(state.pending_proposals().is_empty());
     }
-    
+
     #[test]
     fn test_proposal_types() {
         let member_id = MemberId::generate();
         let key_package = KeyPackage::new(
             KeyPair::generate(CipherSuite::default()),
             Credential::new_basic(member_id, None),
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         let add_proposal = Proposal::Add {
             key_package: key_package.clone(),
             proposer: member_id,
         };
-        
+
         assert_eq!(add_proposal.proposer(), member_id);
         assert_eq!(add_proposal.proposal_type(), "add");
     }
-    
+
     #[test]
     fn test_message_epoch_extraction() {
         let group_id = GroupId::generate();
         let sender = MemberId::generate();
         let epoch = 42;
-        
+
         let handshake = MlsMessage::Handshake(HandshakeMessage {
             group_id,
             epoch,
@@ -531,7 +531,7 @@ mod tests {
             signature: Signature::from_bytes(&[0u8; 64]),
             timestamp: SystemTime::now(),
         });
-        
+
         assert_eq!(handshake.epoch(), epoch);
         assert_eq!(handshake.sender(), sender);
     }

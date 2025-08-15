@@ -3,13 +3,14 @@
 //
 // Fixed version of group.rs that resolves deadlock issues
 
-use crate::{
-    crypto::*, member::*, protocol::*, EpochNumber, MlsError, MlsStats, Result,
-};
+use crate::{EpochNumber, MlsError, MlsStats, Result, crypto::*, member::*, protocol::*};
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use std::{
-    sync::{atomic::{AtomicU64, Ordering}, Arc},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::SystemTime,
 };
 
@@ -35,12 +36,12 @@ impl MlsGroup {
     /// Create a new MLS group
     pub async fn new(config: GroupConfig, creator: MemberIdentity) -> Result<Self> {
         let group_id = GroupId::generate();
-        
+
         let mut members = MemberRegistry::new();
         members.add_member(creator.clone())?;
-        
+
         let tree = TreeKemState::new(creator.key_package.agreement_key)?;
-        
+
         let group = Self {
             config,
             group_id,
@@ -54,13 +55,13 @@ impl MlsGroup {
             stats: Arc::new(RwLock::new(MlsStats::default())),
             secrets: Arc::new(DashMap::new()),
         };
-        
+
         // Initialize key schedule for epoch 0
         group.initialize_epoch_keys().await?;
-        
+
         Ok(group)
     }
-    
+
     /// Add a new member to the group - FIXED to avoid deadlock
     pub async fn add_member(&mut self, identity: &MemberIdentity) -> Result<WelcomeMessage> {
         // Scope locks to release before any await
@@ -68,32 +69,33 @@ impl MlsGroup {
             let mut members = self.members.write();
             let mut tree = self.tree.write();
             let mut stats = self.stats.write();
-            
+
             // Check group size limit
             if members.active_count() >= self.config.max_members {
                 return Err(MlsError::InvalidGroupState(
-                    "Group has reached maximum size".to_string()
+                    "Group has reached maximum size".to_string(),
                 ));
             }
-            
+
             // Add member to registry
             let member_id = identity.id;
             members.add_member(identity.clone())?;
-            
+
             // Update TreeKEM
-            let tree_position = members.get_member(&member_id)
+            let tree_position = members
+                .get_member(&member_id)
                 .unwrap()
                 .tree_position
                 .unwrap();
             tree.add_leaf(tree_position, identity.key_package.agreement_key)?;
-            
+
             // Update statistics
             stats.member_additions += 1;
             stats.groups_active = members.active_count();
-            
+
             (member_id, tree_position, true)
         }; // All locks released here
-        
+
         // Create welcome message (no locks held)
         let welcome = WelcomeMessage {
             group_id: self.group_id,
@@ -105,15 +107,15 @@ impl MlsGroup {
             signature: self.creator.key_package.signature,
             timestamp: SystemTime::now(),
         };
-        
+
         // Advance epoch if needed (separate lock scope)
         if should_advance {
             self.advance_epoch().await?;
         }
-        
+
         Ok(welcome)
     }
-    
+
     /// Remove a member from the group - FIXED to avoid deadlock
     pub async fn remove_member(&mut self, member_id: &MemberId) -> Result<()> {
         // Scope locks to release before any await
@@ -121,52 +123,53 @@ impl MlsGroup {
             let mut members = self.members.write();
             let mut tree = self.tree.write();
             let mut stats = self.stats.write();
-            
+
             // Get member's tree position before removal
-            let tree_position = members.get_member(member_id)
+            let tree_position = members
+                .get_member(member_id)
                 .ok_or(MlsError::MemberNotFound(*member_id))?
                 .tree_position;
-            
+
             // Remove from registry
             members.remove_member(member_id)?;
-            
+
             // Update TreeKEM
             if let Some(position) = tree_position {
                 tree.remove_leaf(position)?;
             }
-            
+
             // Update statistics
             stats.member_removals += 1;
             stats.groups_active = members.active_count();
-            
+
             true
         }; // All locks released here
-        
+
         // Advance epoch if needed (no locks held)
         if should_advance {
             self.advance_epoch().await?;
         }
-        
+
         Ok(())
     }
-    
+
     /// Encrypt a message for the group - FIXED to avoid deadlock
     pub async fn encrypt_message(&self, plaintext: &[u8]) -> Result<ApplicationMessage> {
         // Get application key without holding lock across await
         let sender_key = self.get_application_key_safe("application").await?;
-        
+
         let cipher = AeadCipher::new(sender_key, self.config.cipher_suite)?;
-        
+
         let nonce = random_bytes(self.config.cipher_suite.nonce_size());
         let aad = self.create_application_aad()?;
         let ciphertext = cipher.encrypt(&nonce, plaintext, &aad)?;
-        
+
         // Combine nonce + ciphertext for wire format
         let mut wire_ciphertext = nonce;
         wire_ciphertext.extend_from_slice(&ciphertext);
-        
+
         let sequence = self.message_sequence.fetch_add(1, Ordering::SeqCst);
-        
+
         let message = ApplicationMessage {
             group_id: self.group_id,
             epoch: self.current_epoch(),
@@ -176,16 +179,16 @@ impl MlsGroup {
             signature: self.creator.key_package.signature,
             timestamp: SystemTime::now(),
         };
-        
+
         // Update statistics with scoped lock
         {
             let mut stats = self.stats.write();
             stats.messages_sent += 1;
         } // Lock released
-        
+
         Ok(message)
     }
-    
+
     /// Decrypt an application message - FIXED to avoid deadlock
     pub async fn decrypt_message(&self, message: &ApplicationMessage) -> Result<Vec<u8>> {
         // Verify epoch
@@ -195,51 +198,59 @@ impl MlsGroup {
                 actual: message.epoch,
             });
         }
-        
+
         // Get application key without holding lock
         let receiver_key = self.get_application_key_safe("application").await?;
-        
+
         let cipher = AeadCipher::new(receiver_key, self.config.cipher_suite)?;
-        
+
         // Extract nonce and ciphertext
         let nonce_size = self.config.cipher_suite.nonce_size();
         if message.ciphertext.len() < nonce_size {
             return Err(MlsError::DecryptionFailed);
         }
-        
+
         let (nonce, ciphertext) = message.ciphertext.split_at(nonce_size);
         let aad = self.create_application_aad()?;
-        
+
         let plaintext = cipher.decrypt(nonce, ciphertext, &aad)?;
-        
+
         // Update statistics with scoped lock
         {
             let mut stats = self.stats.write();
             stats.messages_received += 1;
         } // Lock released
-        
+
         Ok(plaintext)
     }
-    
+
     /// Get application key safely without deadlock
     async fn get_application_key_safe(&self, purpose: &str) -> Result<Vec<u8>> {
         // Check secrets cache first (DashMap is safe for concurrent access)
         if let Some(key) = self.secrets.get(purpose) {
             return Ok(key.clone());
         }
-        
+
         // Get application secret and key schedule (with scoped locks)
         let (app_secret, key_schedule) = {
-            let app_secret = self.secrets.get("application")
-                .ok_or(MlsError::KeyDerivationError("Application secret not found".to_string()))?
+            let app_secret = self
+                .secrets
+                .get("application")
+                .ok_or(MlsError::KeyDerivationError(
+                    "Application secret not found".to_string(),
+                ))?
                 .clone();
-            let ks = self.key_schedule.read()
+            let ks = self
+                .key_schedule
+                .read()
                 .as_ref()
-                .ok_or(MlsError::InvalidGroupState("Key schedule not initialized".to_string()))?
+                .ok_or(MlsError::InvalidGroupState(
+                    "Key schedule not initialized".to_string(),
+                ))?
                 .clone();
             (app_secret, ks)
         }; // All locks released
-        
+
         // Derive key without holding locks
         let key = key_schedule.derive_key(
             &self.current_epoch().to_be_bytes(),
@@ -247,35 +258,35 @@ impl MlsGroup {
             purpose.as_bytes(),
             32,
         )?;
-        
+
         // Cache the key
         self.secrets.insert(purpose.to_string(), key.clone());
-        
+
         Ok(key)
     }
-    
+
     /// Advance to next epoch - FIXED to avoid deadlock
     async fn advance_epoch(&self) -> Result<()> {
         let new_epoch = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
-        
+
         // Update protocol state with scoped lock
         {
             let mut state = self.protocol_state.write();
             state.set_epoch(new_epoch);
         } // Lock released
-        
+
         // Update statistics with scoped lock
         {
             let mut stats = self.stats.write();
             stats.epoch_transitions += 1;
         } // Lock released
-        
+
         // Reinitialize keys (no locks held during async operation)
         self.initialize_epoch_keys().await?;
-        
+
         Ok(())
     }
-    
+
     /// Initialize cryptographic keys for current epoch - FIXED
     async fn initialize_epoch_keys(&self) -> Result<()> {
         // Get root secret with scoped lock
@@ -283,10 +294,10 @@ impl MlsGroup {
             let tree = self.tree.read();
             tree.get_root_secret()?
         }; // Lock released
-        
+
         let ks = KeySchedule::new(self.config.cipher_suite);
         let epoch_bytes = self.current_epoch().to_be_bytes();
-        
+
         // Derive epoch-specific secrets (no locks held)
         let secrets = ks.derive_keys(
             &epoch_bytes,
@@ -306,67 +317,77 @@ impl MlsGroup {
             ],
             &[32; 11],
         )?;
-        
+
         // Store secrets (DashMap handles concurrency)
         self.secrets.clear();
         let labels = [
-            "epoch", "sender_data", "handshake", "application",
-            "exporter", "authentication", "external", "confirmation",
-            "membership", "resumption_psk", "init",
+            "epoch",
+            "sender_data",
+            "handshake",
+            "application",
+            "exporter",
+            "authentication",
+            "external",
+            "confirmation",
+            "membership",
+            "resumption_psk",
+            "init",
         ];
-        
+
         for (label, secret) in labels.iter().zip(secrets.iter()) {
             self.secrets.insert(label.to_string(), secret.clone());
         }
-        
+
         // Update key schedule with scoped lock
         {
             let mut key_schedule = self.key_schedule.write();
             *key_schedule = Some(ks);
         } // Lock released
-        
+
         Ok(())
     }
-    
+
     // Other methods remain the same but follow the pattern:
     // - Use scoped locks { } to ensure release before await
     // - Clone data if needed after lock release
     // - Never hold locks across await points
-    
+
     pub fn current_epoch(&self) -> EpochNumber {
         self.epoch.load(Ordering::SeqCst)
     }
-    
+
     pub async fn update_epoch(&self) -> Result<()> {
         self.advance_epoch().await
     }
-    
+
     pub fn group_id(&self) -> GroupId {
         self.group_id
     }
-    
+
     pub fn stats(&self) -> MlsStats {
         self.stats.read().clone()
     }
-    
+
     pub fn member_count(&self) -> usize {
         self.members.read().active_count()
     }
-    
+
     pub fn member_ids(&self) -> Vec<MemberId> {
-        self.members.read()
+        self.members
+            .read()
             .active_members()
             .map(|m| m.identity.id)
             .collect()
     }
-    
+
     pub fn is_member_active(&self, member_id: &MemberId) -> bool {
-        self.members.read()
+        self.members
+            .read()
             .get_member(member_id)
             .map(|m| m.state == MemberState::Active)
             .unwrap_or(false)
     }
-    
+
     fn create_group_info(&self) -> Result<GroupInfo> {
         Ok(GroupInfo {
             group_id: self.group_id,
@@ -381,7 +402,7 @@ impl MlsGroup {
             timestamp: SystemTime::now(),
         })
     }
-    
+
     fn create_application_aad(&self) -> Result<Vec<u8>> {
         let mut aad = Vec::new();
         aad.extend_from_slice(&self.group_id.0);
@@ -410,13 +431,13 @@ impl TreeKemState {
             size: 0,
             root_secret,
         };
-        
+
         // Add initial member
         state.add_leaf(0, initial_key)?;
-        
+
         Ok(state)
     }
-    
+
     /// Add a leaf node (new member)
     pub fn add_leaf(&mut self, position: usize, public_key: x25519_dalek::PublicKey) -> Result<()> {
         // Ensure tree capacity
@@ -424,107 +445,105 @@ impl TreeKemState {
         if self.nodes.len() < required_size {
             self.nodes.resize(required_size, None);
         }
-        
+
         // Create leaf node
         let leaf = TreeNode {
             public_key: public_key.as_bytes().to_vec(),
             secret: random_bytes(32),
             parent: self.parent_index(position),
         };
-        
+
         self.nodes[position] = Some(leaf);
         self.size = self.size.max(position + 1);
-        
+
         // Update parent nodes up to root
         self.update_path(position)?;
-        
+
         Ok(())
     }
-    
+
     /// Remove a leaf node
     pub fn remove_leaf(&mut self, position: usize) -> Result<()> {
         if position >= self.nodes.len() {
             return Err(MlsError::TreeKemError("Invalid leaf position".to_string()));
         }
-        
+
         self.nodes[position] = None;
-        
+
         // Update parent path
         self.update_path(position)?;
-        
+
         Ok(())
     }
-    
+
     /// Get the root secret for key derivation
     pub fn get_root_secret(&self) -> Result<Vec<u8>> {
         Ok(self.root_secret.clone())
     }
-    
+
     /// Compute tree hash for integrity verification
     pub fn compute_tree_hash(&self) -> Result<Vec<u8>> {
         let hash = Hash::new(CipherSuite::default());
         let mut tree_data = Vec::new();
-        
-        for node in &self.nodes {
-            if let Some(n) = node {
-                tree_data.extend_from_slice(&n.public_key);
-            }
+
+        for n in self.nodes.iter().flatten() {
+            tree_data.extend_from_slice(&n.public_key);
         }
-        
+
         Ok(hash.hash(&tree_data))
     }
-    
+
     // Private helper methods
-    
+
     /// Update path from leaf to root
     fn update_path(&mut self, leaf_position: usize) -> Result<()> {
         let mut current = leaf_position;
-        
+
         while let Some(parent_idx) = self.parent_index(current) {
             if parent_idx >= self.nodes.len() {
                 self.nodes.resize(parent_idx + 1, None);
             }
-            
+
             // Create or update parent node
             let left_child = self.left_child(parent_idx);
             let right_child = self.right_child(parent_idx);
-            
+
             let mut parent_secret = Vec::new();
-            
+
             // Combine secrets from children
-            if let Some(left_idx) = left_child {
-                if let Some(Some(left_node)) = self.nodes.get(left_idx) {
-                    parent_secret.extend_from_slice(&left_node.secret);
-                }
+            if let Some(left_idx) = left_child
+                && let Some(Some(left_node)) = self.nodes.get(left_idx)
+            {
+                parent_secret.extend_from_slice(&left_node.secret);
             }
-            
-            if let Some(right_idx) = right_child {
-                if let Some(Some(right_node)) = self.nodes.get(right_idx) {
-                    parent_secret.extend_from_slice(&right_node.secret);
-                }
+
+            if let Some(right_idx) = right_child
+                && let Some(Some(right_node)) = self.nodes.get(right_idx)
+            {
+                parent_secret.extend_from_slice(&right_node.secret);
             }
-            
+
             // Hash combined secrets for parent
             let hash = Hash::new(CipherSuite::default());
             let new_secret = hash.hash(&parent_secret);
-            
+
             self.nodes[parent_idx] = Some(TreeNode {
                 public_key: new_secret[..32].to_vec(), // Use hash as public key
                 secret: new_secret.clone(),
                 parent: self.parent_index(parent_idx),
             });
-            
+
             current = parent_idx;
         }
-        
+
         // Update root secret
         if let Some(root_node) = &self.nodes.get(self.root_index()).and_then(|n| n.as_ref()) {
             self.root_secret = root_node.secret.clone();
         }
-        
+
         Ok(())
     }
-    
+
     /// Get parent index for a given node
     fn parent_index(&self, index: usize) -> Option<usize> {
         if index == 0 {
@@ -533,7 +552,7 @@ impl TreeKemState {
             Some((index - 1) / 2)
         }
     }
-    
+
     /// Get left child index
     fn left_child(&self, index: usize) -> Option<usize> {
         let child = 2 * index + 1;
@@ -543,7 +562,7 @@ impl TreeKemState {
             None
         }
     }
-    
+
     /// Get right child index
     fn right_child(&self, index: usize) -> Option<usize> {
         let child = 2 * index + 2;
@@ -553,7 +572,7 @@ impl TreeKemState {
             None
         }
     }
-    
+
     /// Get root index (always 0 for our tree)
     fn root_index(&self) -> usize {
         0

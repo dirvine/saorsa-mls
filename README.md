@@ -4,18 +4,24 @@
 [![Documentation](https://docs.rs/saorsa-mls/badge.svg)](https://docs.rs/saorsa-mls)
 [![CI](https://github.com/dirvine/saorsa-mls-foundation/workflows/CI/badge.svg)](https://github.com/dirvine/saorsa-mls-foundation/actions)
 
-Message Layer Security (MLS) protocol implementation for P2P secure group communication.
+Experimental Message Layer Security (MLS)-inspired library for P2P secure group communication.
 
-## Features
+## Status and scope
 
-- **MLS Protocol Implementation**: RFC 9420 compliant implementation
+This crate is an early-stage, experimental exploration of MLS-like group messaging. It is not a production-ready implementation of RFC 9420, and it is not wire compatible with the IETF MLS ecosystem.
+
+Do not use this crate to protect sensitive data in production systems.
+
+## Features (current)
+
+- **MLS-inspired design**: draws from RFC 9420 concepts (not compliant)
 - **Group Management**: Create, join, and manage secure group communication
 - **Forward Secrecy**: Cryptographic forward secrecy for all group messages
 - **Tree-Based Key Exchange**: Efficient key management using TreeKEM
 - **Asynchronous Architecture**: Built on Tokio for high-performance async operations
 - **Memory Safe**: Written in Rust with zero-copy optimizations where possible
 
-## Architecture
+## Architecture (high-level)
 
 The MLS implementation provides secure group messaging with the following components:
 
@@ -27,7 +33,7 @@ The MLS implementation provides secure group messaging with the following compon
 - **Signature Verification**: Ed25519 signatures for authentication
 - **TreeKEM**: Efficient group key agreement protocol
 
-### Security Features
+### Security features (current)
 
 - **Forward Secrecy**: Keys are constantly rotated to ensure past messages remain secure
 - **Post-Compromise Security**: Recovery from member key compromise
@@ -43,90 +49,55 @@ Add this to your `Cargo.toml`:
 saorsa-mls = "0.1.0"
 ```
 
-### Basic Example
+### Basic example
 
 ```rust
-use saorsa_mls::{Group, Member, MlsConfig};
+use saorsa_mls::{MlsGroup, MemberIdentity, GroupConfig};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
     // Create a new group
-    let config = MlsConfig::default();
-    let creator = Member::new("creator".to_string()).await?;
-    let mut group = Group::new(creator, config).await?;
+    let config = GroupConfig::default();
+    let creator = MemberIdentity::generate();
+    let mut group = MlsGroup::new(config, creator).await?;
 
     // Add members to the group
-    let member1 = Member::new("member1".to_string()).await?;
-    let member2 = Member::new("member2".to_string()).await?;
-    
-    group.add_member(member1).await?;
-    group.add_member(member2).await?;
+    let member1 = MemberIdentity::generate();
+    let member2 = MemberIdentity::generate();
 
-    // Send a secure message to the group
-    let message = b"Hello, secure group!";
-    let encrypted = group.encrypt_message(message).await?;
-    
-    // All group members can decrypt the message
+    group.add_member(&member1).await?;
+    group.add_member(&member2).await?;
+
+    // Send a message to the group
+    let plaintext = b"Hello, experimental MLS!";
+    let encrypted = group.encrypt_message(plaintext).await?;
+
+    // Decrypt the message
     let decrypted = group.decrypt_message(&encrypted).await?;
-    assert_eq!(message, &decrypted[..]);
+    assert_eq!(plaintext, &decrypted[..]);
 
     Ok(())
 }
 ```
 
-### Advanced Usage
+### Advanced notes
 
-```rust
-use saorsa_mls::{Group, Member, MlsConfig, CiphersuiteName};
+- The only available ciphersuite today is `CipherSuite::Ed25519ChaCha20Poly1305Blake3`.
+- Epoch changes can be triggered with `group.update_epoch().await?;`.
+- The wire format uses `bincode` serialization and is not stable across versions.
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create group with custom configuration
-    let config = MlsConfig::builder()
-        .ciphersuite(CiphersuiteName::MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519)
-        .max_group_size(100)
-        .key_rotation_interval(Duration::from_secs(3600))
-        .build();
+## Protocol details (work-in-progress)
 
-    let creator = Member::new("creator".to_string()).await?;
-    let mut group = Group::new(creator, config).await?;
+### Ciphersuite
 
-    // Handle group operations
-    group.on_member_added(|member_id| {
-        println!("Member {} joined the group", member_id);
-    });
+Currently:
+- `Ed25519 + X25519 (intended) + ChaCha20-Poly1305 + BLAKE3`
 
-    group.on_member_removed(|member_id| {
-        println!("Member {} left the group", member_id);
-    });
+### Key derivation
 
-    // Periodic key rotation for forward secrecy
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(3600)).await;
-            if let Err(e) = group.rotate_keys().await {
-                eprintln!("Key rotation failed: {}", e);
-            }
-        }
-    });
-
-    Ok(())
-}
-```
-
-## Protocol Details
-
-### Ciphersuites
-
-Supported MLS ciphersuites:
-- `MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519` (default)
-- Additional ciphersuites available for different security requirements
-
-### Key Derivation
-
-- **HKDF-SHA256**: Key derivation function for all cryptographic operations
-- **X25519**: Elliptic curve Diffie-Hellman for key agreement
-- **Ed25519**: Digital signatures for authentication
+- **HKDF-SHA256**: KDF for deriving per-epoch secrets.
+- **X25519**: Intended for ECDH key agreement (implementation is currently simplified; see Security section).
+- **Ed25519**: Used for signing.
 
 ### Message Format
 
@@ -143,12 +114,16 @@ The implementation is optimized for:
 - **Memory Efficiency**: Zero-copy operations where possible
 - **Async Operations**: Non-blocking I/O for network operations
 
-## Security Considerations
+## Security considerations
 
-- **Forward Secrecy**: Automatic key rotation ensures past message security
-- **Post-Compromise Security**: Recovery mechanisms for compromised members
-- **Side-Channel Resistance**: Constant-time cryptographic operations
-- **Memory Safety**: Rust's memory safety prevents common vulnerabilities
+This crate is not yet production-ready. Important limitations include:
+- Key agreement and TreeKEM are simplified; shared secret derivation is not equivalent to X25519 ECDH.
+- Signatures and credential handling are simplified in places; some signatures are placeholders in tests/examples.
+- Nonce uniqueness relies on randomness; there is no reuse detection.
+- Secrets are stored in memory as `Vec<u8>` without zeroization at drop.
+- Serialization uses `bincode` without strict length limits or versioning.
+
+Until these are addressed, treat this crate as a prototype for experimentation only.
 
 ## Testing
 
@@ -158,7 +133,7 @@ Run the test suite:
 cargo test
 ```
 
-Run benchmarks:
+Run benchmarks (optional):
 
 ```bash
 cargo bench
