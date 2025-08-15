@@ -46,30 +46,27 @@ pub struct MemberIdentity {
 
 impl MemberIdentity {
     /// Generate a new member identity
-    pub fn generate() -> Self {
+    pub fn generate() -> Result<Self> {
         let id = MemberId::generate();
         let keypair = KeyPair::generate(CipherSuite::default());
-        let credential = Credential::new_basic(id, None);
-        let key_package = match KeyPackage::new(keypair, credential.clone()) {
-            Ok(kp) => kp,
-            Err(e) => panic!("failed to create key package: {}", e),
-        };
+        let credential = Credential::new_basic(id, None)?;
+        let key_package = KeyPackage::new(keypair, credential.clone())?;
 
-        Self {
+        Ok(Self {
             id,
             name: None,
             credential,
             key_package,
             created_at: SystemTime::now(),
-        }
+        })
     }
 
     /// Create identity with display name
-    pub fn with_name(name: String) -> Self {
-        let mut identity = Self::generate();
+    pub fn with_name(name: String) -> Result<Self> {
+        let mut identity = Self::generate()?;
         identity.name = Some(name.clone());
-        identity.credential = Credential::new_basic(identity.id, Some(name));
-        identity
+        identity.credential = Credential::new_basic(identity.id, Some(name))?;
+        Ok(identity)
     }
 
     /// Get the member ID
@@ -111,17 +108,17 @@ pub enum Credential {
 
 impl Credential {
     /// Create a new basic credential
-    pub fn new_basic(member_id: MemberId, name: Option<String>) -> Self {
+    pub fn new_basic(member_id: MemberId, name: Option<String>) -> Result<Self> {
         let identity = name.unwrap_or_else(|| member_id.to_string()).into_bytes();
 
-        // For now, use a placeholder signature (would be properly signed in production)
+        // Placeholder signature for now (will be replaced when signing with real keypair is wired)
         let signature = Signature::from_bytes(&[0u8; 64]);
 
-        Self::Basic {
+        Ok(Self::Basic {
             member_id,
             identity,
             signature,
-        }
+        })
     }
 
     /// Get the member ID from this credential
@@ -396,8 +393,8 @@ mod tests {
 
     #[test]
     fn test_member_identity_generation() {
-        let identity1 = MemberIdentity::generate();
-        let identity2 = MemberIdentity::generate();
+        let identity1 = MemberIdentity::generate().unwrap();
+        let identity2 = MemberIdentity::generate().unwrap();
 
         assert_ne!(identity1.id, identity2.id);
         assert_ne!(
@@ -409,7 +406,7 @@ mod tests {
     #[test]
     fn test_member_identity_with_name() {
         let name = "Alice".to_string();
-        let identity = MemberIdentity::with_name(name.clone());
+        let identity = MemberIdentity::with_name(name.clone()).unwrap();
 
         assert_eq!(identity.name, Some(name));
     }
@@ -417,7 +414,7 @@ mod tests {
     #[test]
     fn test_key_package_creation() {
         let keypair = KeyPair::generate(CipherSuite::default());
-        let credential = Credential::new_basic(MemberId::generate(), Some("Test".to_string()));
+        let credential = Credential::new_basic(MemberId::generate(), Some("Test".to_string())).unwrap();
 
         let package = KeyPackage::new(keypair, credential).unwrap();
         assert_eq!(package.version, crate::MLS_VERSION);
@@ -429,8 +426,8 @@ mod tests {
         let mut registry = MemberRegistry::new();
 
         // Add members
-        let identity1 = MemberIdentity::generate();
-        let identity2 = MemberIdentity::generate();
+        let identity1 = MemberIdentity::generate().unwrap();
+        let identity2 = MemberIdentity::generate().unwrap();
         let id1 = identity1.id;
         let id2 = identity2.id;
 
@@ -451,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_group_member_functionality() {
-        let identity = MemberIdentity::generate();
+        let identity = MemberIdentity::generate().unwrap();
         let mut member = GroupMember::new(identity, Some(0));
 
         assert!(member.is_active());
@@ -467,7 +464,7 @@ mod tests {
     #[test]
     fn test_credential_member_id() {
         let id = MemberId::generate();
-        let credential = Credential::new_basic(id, None);
+        let credential = Credential::new_basic(id, None).unwrap();
 
         assert_eq!(credential.member_id(), id);
     }

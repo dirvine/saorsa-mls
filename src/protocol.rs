@@ -511,7 +511,7 @@ mod tests {
         let member_id = MemberId::generate();
         let key_package = KeyPackage::new(
             KeyPair::generate(CipherSuite::default()),
-            Credential::new_basic(member_id, None),
+            Credential::new_basic(member_id, None).unwrap(),
         )
         .unwrap();
 
