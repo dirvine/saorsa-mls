@@ -326,7 +326,7 @@ pub mod labels {
 }
 
 /// Secret byte buffer that zeroizes on drop
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SecretBytes(pub Vec<u8>);
 
 impl Drop for SecretBytes {

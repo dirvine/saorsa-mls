@@ -15,6 +15,45 @@ use std::{
     time::SystemTime,
 };
 
+/// Sliding replay window for sequences
+#[derive(Debug, Default)]
+struct ReplayWindow {
+    max_seen: u64,
+    window: u64,
+}
+
+impl ReplayWindow {
+    fn new() -> Self { Self { max_seen: 0, window: 0 } }
+
+    // Allow if sequence is new within a 64-slot window; update state
+    fn allow_and_update(&mut self, seq: u64) -> bool {
+        if seq > self.max_seen {
+            let shift = seq - self.max_seen;
+            if shift >= 64 {
+                self.window = 0;
+            } else {
+                self.window <<= shift;
+            }
+            self.window |= 1;
+            self.max_seen = seq;
+            true
+        } else {
+            let offset = self.max_seen - seq;
+            if offset >= 64 {
+                false
+            } else {
+                let mask = 1u64 << offset;
+                if self.window & mask != 0 {
+                    false
+                } else {
+                    self.window |= mask;
+                    true
+                }
+            }
+        }
+    }
+}
+
 pub use crate::protocol::{GroupConfig, GroupId};
 
 /// MLS group state with TreeKEM key management - FIXED VERSION
@@ -27,10 +66,15 @@ pub struct MlsGroup {
     members: Arc<RwLock<MemberRegistry>>,
     tree: Arc<RwLock<TreeKemState>>,
     key_schedule: Arc<RwLock<Option<KeySchedule>>>,
+    // Per-sender send sequence numbers
+    send_sequences: Arc<DashMap<MemberId, u64>>,
+    // Global sequence retained for backward compatibility (will be removed)
     message_sequence: AtomicU64,
     protocol_state: Arc<RwLock<ProtocolStateMachine>>,
     stats: Arc<RwLock<MlsStats>>,
-    secrets: Arc<DashMap<String, Vec<u8>>>,
+    secrets: Arc<DashMap<String, crate::crypto::SecretBytes>>,
+    // Per-sender replay windows
+    recv_windows: Arc<DashMap<MemberId, ReplayWindow>>,
 }
 
 impl MlsGroup {
@@ -51,10 +95,12 @@ impl MlsGroup {
             members: Arc::new(RwLock::new(members)),
             tree: Arc::new(RwLock::new(tree)),
             key_schedule: Arc::new(RwLock::new(None)),
+            send_sequences: Arc::new(DashMap::new()),
             message_sequence: AtomicU64::new(0),
             protocol_state: Arc::new(RwLock::new(ProtocolStateMachine::new(0))),
             stats: Arc::new(RwLock::new(MlsStats::default())),
             secrets: Arc::new(DashMap::new()),
+            recv_windows: Arc::new(DashMap::new()),
         };
 
         // Initialize key schedule for epoch 0
@@ -159,17 +205,23 @@ impl MlsGroup {
 
     /// Encrypt a message for the group - FIXED to avoid deadlock
     pub async fn encrypt_message(&self, plaintext: &[u8]) -> Result<ApplicationMessage> {
-        // Get application key without holding lock across await
-        let sender_key = self.get_application_key_safe("application").await?;
+        // Derive per-sender application key and base nonce
+        let sender_id = self.creator.id;
+        let (app_key, base_nonce) = self
+            .get_sender_application_key_and_nonce(sender_id)
+            .await?;
 
-        let cipher = AeadCipher::new(sender_key, self.config.cipher_suite)?;
+        let cipher = AeadCipher::new(app_key, self.config.cipher_suite)?;
 
-        // Nonce derived from epoch and sequence for uniqueness
-        let sequence = self.message_sequence.fetch_add(1, Ordering::SeqCst);
-        let mut nonce = Vec::with_capacity(self.config.cipher_suite.nonce_size());
-        nonce.extend_from_slice(&self.current_epoch().to_be_bytes()[..4]); // 4 bytes
-        nonce.extend_from_slice(&sequence.to_be_bytes()); // 8 bytes
-        let aad = self.create_application_aad_with_seq_sender(sequence, self.creator.id);
+        // Per-sender sequence number
+        let sequence = self
+            .send_sequences
+            .entry(sender_id)
+            .and_modify(|s| *s += 1)
+            .or_insert(0)
+            .to_owned();
+        let nonce = Self::xor_nonce_with_sequence(&base_nonce, sequence);
+        let aad = self.create_application_aad_with_seq_sender(sequence, sender_id);
         let ciphertext = cipher.encrypt(&nonce, plaintext, &aad)?;
 
         // Combine nonce + ciphertext for wire format
@@ -205,9 +257,10 @@ impl MlsGroup {
             });
         }
 
-        // Get application key without holding lock
-        let receiver_key = self.get_application_key_safe("application").await?;
-
+        // Derive per-sender key/nonce for the sender of this message
+        let (receiver_key, base_nonce) = self
+            .get_sender_application_key_and_nonce(message.sender)
+            .await?;
         let cipher = AeadCipher::new(receiver_key, self.config.cipher_suite)?;
 
         // Extract nonce and ciphertext
@@ -219,17 +272,22 @@ impl MlsGroup {
         let (nonce, ciphertext) = message.ciphertext.split_at(nonce_size);
         let aad = self.create_application_aad_with_seq_sender(message.sequence, message.sender);
 
+        // Recompute expected nonce from base and sequence and compare
+        let expected_nonce = Self::xor_nonce_with_sequence(&base_nonce, message.sequence);
+        if nonce != expected_nonce.as_slice() {
+            return Err(MlsError::DecryptionFailed);
+        }
+
         let plaintext = cipher.decrypt(nonce, ciphertext, &aad)?;
 
-        // Replay protection using per-member sequence number
+        // Replay protection using per-sender sliding window
+        if !self
+            .recv_windows
+            .entry(message.sender)
+            .or_insert_with(ReplayWindow::new)
+            .allow_and_update(message.sequence)
         {
-            let mut members = self.members.write();
-            if let Some(member) = members.get_member_mut(&message.sender) {
-                if message.sequence <= member.sequence_number {
-                    return Err(MlsError::ProtocolError("replay detected".to_string()));
-                }
-                member.sequence_number = message.sequence;
-            }
+            return Err(MlsError::ProtocolError("replay detected".to_string()));
         }
 
         // Update statistics with scoped lock
@@ -241,14 +299,19 @@ impl MlsGroup {
         Ok(plaintext)
     }
 
-    /// Get application key safely without deadlock
-    async fn get_application_key_safe(&self, purpose: &str) -> Result<Vec<u8>> {
-        // Check secrets cache first (DashMap is safe for concurrent access)
-        if let Some(key) = self.secrets.get(purpose) {
-            return Ok(key.clone());
+    /// Derive and cache per-sender application key and base nonce
+    async fn get_sender_application_key_and_nonce(
+        &self,
+        sender: MemberId,
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
+        let key_cache = format!("application_key::{}", sender);
+        let nonce_cache = format!("application_nonce::{}", sender);
+
+        if let (Some(k), Some(n)) = (self.secrets.get(&key_cache), self.secrets.get(&nonce_cache)) {
+            return Ok((k.0.clone(), n.0.clone()));
         }
 
-        // Get application secret and key schedule (with scoped locks)
+        // Load application secret and key schedule
         let (app_secret, key_schedule) = {
             let app_secret = self
                 .secrets
@@ -256,6 +319,7 @@ impl MlsGroup {
                 .ok_or(MlsError::KeyDerivationError(
                     "Application secret not found".to_string(),
                 ))?
+                .0
                 .clone();
             let ks = self
                 .key_schedule
@@ -266,20 +330,36 @@ impl MlsGroup {
                 ))?
                 .clone();
             (app_secret, ks)
-        }; // All locks released
+        };
 
-        // Derive key without holding locks
-        let key = key_schedule.derive_key(
+        // Derive per-sender key and base nonce using HKDF labels
+        let mut info_key = Vec::new();
+        info_key.extend_from_slice(b"mls application key");
+        info_key.extend_from_slice(sender.0.as_bytes());
+        let app_key = key_schedule.derive_key(
             &self.current_epoch().to_be_bytes(),
             &app_secret,
-            purpose.as_bytes(),
+            &info_key,
             32,
         )?;
 
-        // Cache the key
-        self.secrets.insert(purpose.to_string(), key.clone());
+        let mut info_nonce = Vec::new();
+        info_nonce.extend_from_slice(b"mls application nonce");
+        info_nonce.extend_from_slice(sender.0.as_bytes());
+        let base_nonce = key_schedule.derive_key(
+            &self.current_epoch().to_be_bytes(),
+            &app_secret,
+            &info_nonce,
+            self.config.cipher_suite.nonce_size(),
+        )?;
 
-        Ok(key)
+        // Cache
+        self.secrets
+            .insert(key_cache, crate::crypto::SecretBytes::from(app_key.clone()));
+        self.secrets
+            .insert(nonce_cache, crate::crypto::SecretBytes::from(base_nonce.clone()));
+
+        Ok((app_key, base_nonce))
     }
 
     /// Advance to next epoch - FIXED to avoid deadlock
@@ -352,7 +432,8 @@ impl MlsGroup {
         ];
 
         for (label, secret) in labels.iter().zip(secrets.iter()) {
-            self.secrets.insert(label.to_string(), secret.clone());
+            self.secrets
+                .insert(label.to_string(), crate::crypto::SecretBytes::from(secret.clone()));
         }
 
         // Update key schedule with scoped lock
@@ -432,6 +513,18 @@ impl MlsGroup {
         aad.extend_from_slice(&sequence.to_be_bytes());
         aad.extend_from_slice(sender.0.as_bytes());
         aad
+    }
+
+    /// MLS-style nonce = base_nonce XOR seq (seq in 12 bytes BE)
+    fn xor_nonce_with_sequence(base_nonce: &[u8], sequence: u64) -> Vec<u8> {
+        let mut seq_bytes = [0u8; 12];
+        // Put sequence in the last 8 bytes, big-endian
+        seq_bytes[4..].copy_from_slice(&sequence.to_be_bytes());
+        base_nonce
+            .iter()
+            .zip(seq_bytes.iter())
+            .map(|(a, b)| a ^ b)
+            .collect()
     }
 }
 
