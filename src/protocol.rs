@@ -1,11 +1,8 @@
-// Copyright 2024 Saorsa Labs
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 //! MLS protocol messages and state machine
 
 use crate::{EpochNumber, MessageSequence, MlsError, Result, crypto::*, member::*};
 use bincode::Options;
-use ed25519_dalek::Signature;
+use saorsa_pqc::api::MlDsaSignature;
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 
@@ -40,520 +37,469 @@ impl MlsMessage {
     }
 
     /// Verify the message signature
-    pub fn verify_signature(&self, verifying_key: &ed25519_dalek::VerifyingKey) -> bool {
+    pub fn verify_signature(&self, verifying_key: &saorsa_pqc::api::MlDsaPublicKey) -> bool {
         let (data, signature) = match self {
             Self::Handshake(msg) => (&msg.content, &msg.signature),
             Self::Application(msg) => (&msg.ciphertext, &msg.signature),
             Self::Welcome(msg) => (&msg.group_info, &msg.signature),
         };
 
-        verifying_key.verify_strict(data, signature).is_ok()
+        use saorsa_pqc::api::MlDsa;
+        let ml_dsa = MlDsa::new(saorsa_pqc::api::MlDsaVariant::MlDsa65);
+        ml_dsa.verify(verifying_key, data, signature).is_ok()
     }
 }
 
-/// Handshake message for group management operations
+/// Handshake message content types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum HandshakeContent {
+    /// Add a new member to the group
+    Add(AddProposal),
+    /// Remove a member from the group
+    Remove(RemoveProposal),
+    /// Update member's key material
+    Update(UpdateProposal),
+    /// Commit pending proposals
+    Commit(CommitMessage),
+}
+
+/// Handshake message for group operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandshakeMessage {
-    /// Wire schema version
-    pub schema_version: u16,
-    /// Group identifier
-    pub group_id: GroupId,
-    /// Current epoch number
     pub epoch: EpochNumber,
-    /// Message sender
     pub sender: MemberId,
-    /// Message sequence number
-    pub sequence: MessageSequence,
-    /// Handshake content
     pub content: Vec<u8>,
-    /// Confirmation tag binding to transcript
-    pub confirmation_tag: Vec<u8>,
-    /// Digital signature
-    pub signature: Signature,
-    /// Timestamp
-    pub timestamp: SystemTime,
+    pub signature: MlDsaSignature,
 }
 
 /// Application message with encrypted payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplicationMessage {
-    /// Wire schema version
-    pub schema_version: u16,
-    /// Group identifier
-    pub group_id: GroupId,
-    /// Current epoch number
     pub epoch: EpochNumber,
-    /// Message sender
     pub sender: MemberId,
-    /// Message sequence number
+    pub generation: u32,
     pub sequence: MessageSequence,
-    /// Encrypted content
     pub ciphertext: Vec<u8>,
-    /// Authentication tag
-    pub signature: Signature,
-    /// Timestamp
-    pub timestamp: SystemTime,
+    pub signature: MlDsaSignature,
 }
 
-/// Welcome message for new group members
+/// Welcome message for new members
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WelcomeMessage {
-    /// Wire schema version
-    pub schema_version: u16,
-    /// Group identifier
-    pub group_id: GroupId,
-    /// Epoch when member was added
     pub epoch: EpochNumber,
-    /// Member who sent the welcome
     pub sender: MemberId,
-    /// Encrypted group information
+    pub cipher_suite: CipherSuite,
     pub group_info: Vec<u8>,
-    /// List of new member IDs
-    pub new_members: Vec<MemberId>,
-    /// Digital signature
-    pub signature: Signature,
-    /// Timestamp
-    pub timestamp: SystemTime,
+    pub secrets: Vec<EncryptedGroupSecrets>,
+    pub signature: MlDsaSignature,
 }
 
-/// Group proposal types
+/// Proposal to add a new member
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Proposal {
-    /// Add a new member to the group
-    Add {
-        key_package: KeyPackage,
-        proposer: MemberId,
-    },
-    /// Remove a member from the group
-    Remove {
-        member_id: MemberId,
-        proposer: MemberId,
-    },
-    /// Update own key package
-    Update {
-        key_package: KeyPackage,
-        member_id: MemberId,
-    },
-    /// Pre-shared key proposal
-    PreSharedKey {
-        psk_id: Vec<u8>,
-        psk_nonce: Vec<u8>,
-        proposer: MemberId,
-    },
+pub struct AddProposal {
+    pub key_package: KeyPackage,
 }
 
-impl Proposal {
-    /// Get the member who made this proposal
-    pub fn proposer(&self) -> MemberId {
-        match self {
-            Self::Add { proposer, .. } => *proposer,
-            Self::Remove { proposer, .. } => *proposer,
-            Self::Update { member_id, .. } => *member_id,
-            Self::PreSharedKey { proposer, .. } => *proposer,
-        }
-    }
-
-    /// Get the proposal type as a string
-    pub fn proposal_type(&self) -> &'static str {
-        match self {
-            Self::Add { .. } => "add",
-            Self::Remove { .. } => "remove",
-            Self::Update { .. } => "update",
-            Self::PreSharedKey { .. } => "psk",
-        }
-    }
-}
-
-/// Commit message that finalizes pending proposals
+/// Proposal to remove a member
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Commit {
-    /// Group identifier
-    pub group_id: GroupId,
-    /// Current epoch (before commit)
-    pub epoch: EpochNumber,
-    /// Member making the commit
-    pub sender: MemberId,
-    /// Proposals being committed
-    pub proposals: Vec<Proposal>,
-    /// Path update for TreeKEM
+pub struct RemoveProposal {
+    pub removed: MemberId,
+}
+
+/// Proposal to update member's keys
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateProposal {
+    pub key_package: KeyPackage,
+    pub signature: MlDsaSignature,
+}
+
+/// Commit message containing proposals and path updates
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitMessage {
+    pub proposals: Vec<ProposalRef>,
     pub path: Option<UpdatePath>,
-    /// Confirmation tag
-    pub confirmation_tag: Vec<u8>,
-    /// Digital signature
-    pub signature: Signature,
-    /// Timestamp
-    pub timestamp: SystemTime,
 }
 
-/// TreeKEM update path
+/// Reference to a proposal
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ProposalRef {
+    /// Reference to a proposal by hash
+    Reference(Vec<u8>),
+    /// Inline proposal
+    Inline(ProposalContent),
+}
+
+/// Proposal content wrapper
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ProposalContent {
+    Add(AddProposal),
+    Remove(RemoveProposal),
+    Update(UpdateProposal),
+}
+
+/// Update path for tree operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdatePath {
-    /// New public key for the sender
     pub leaf_key_package: KeyPackage,
-    /// Encrypted path secrets for tree update
     pub nodes: Vec<UpdatePathNode>,
 }
 
-/// Node in the TreeKEM update path
+/// Node in an update path
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdatePathNode {
-    /// Public key for this tree level
-    pub public_key: Vec<u8>,
-    /// Encrypted secrets for this level
+    pub public_key: saorsa_pqc::api::MlKemPublicKey,
     pub encrypted_path_secret: Vec<EncryptedPathSecret>,
 }
 
-/// Encrypted path secret for TreeKEM
+/// Encrypted group secrets for welcome messages
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EncryptedGroupSecrets {
+    pub recipient_key_package_hash: Vec<u8>,
+    pub encrypted_group_info: Vec<u8>,
+    pub encrypted_path_secret: Vec<u8>,
+}
+
+/// Message framing with metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageFrame {
+    pub schema_version: u8,
+    pub message_type: MessageType,
+    pub epoch: EpochNumber,
+    pub sender: MemberId,
+    pub authenticated_data: Vec<u8>,
+    pub payload: Vec<u8>,
+    pub signature: MlDsaSignature,
+}
+
+/// Message types in the protocol
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MessageType {
+    Handshake = 1,
+    Application = 2,
+    Welcome = 3,
+    GroupInfo = 4,
+    KeyPackage = 5,
+}
+
+/// Group information for synchronization
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupInfo {
+    pub group_id: Vec<u8>,
+    pub epoch: EpochNumber,
+    pub tree_hash: Vec<u8>,
+    pub confirmed_transcript_hash: Vec<u8>,
+    pub extensions: Vec<Extension>,
+    pub confirmation_tag: Vec<u8>,
+    pub signer: MemberId,
+}
+
+/// Tree structure for key management
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TreeKemState {
+    pub nodes: Vec<TreeNode>,
+    pub epoch: EpochNumber,
+}
+
+/// Node in the TreeKEM structure
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TreeNode {
+    Leaf(LeafNode),
+    Parent(ParentNode),
+}
+
+/// Leaf node containing member information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LeafNode {
+    pub key_package: Option<KeyPackage>,
+    pub unmerged_leaves: Vec<MemberId>,
+}
+
+/// Parent node in the tree
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParentNode {
+    pub public_key: Option<saorsa_pqc::api::MlKemPublicKey>,
+    pub unmerged_leaves: Vec<MemberId>,
+}
+
+/// Encrypted path secret for tree operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncryptedPathSecret {
     /// Recipient of this encrypted secret
     pub recipient: MemberId,
-    /// Encrypted secret data
-    pub ciphertext: Vec<u8>,
+    /// Encrypted path secret using ML-KEM
+    pub ciphertext: saorsa_pqc::api::MlKemCiphertext,
 }
 
-/// Group information shared with new members
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GroupInfo {
-    /// Group identifier
-    pub group_id: GroupId,
-    /// Current epoch
-    pub epoch: EpochNumber,
-    /// Group configuration
-    pub config: GroupConfig,
-    /// Current member list
-    pub roster: Vec<MemberId>,
-    /// Group state tree
-    pub tree_hash: Vec<u8>,
-    /// Confirmation tag
-    pub confirmation_tag: Vec<u8>,
-    /// Timestamp
-    pub timestamp: SystemTime,
-}
-
-/// Message framing for wire protocol
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MessageFrame {
-    /// Protocol version
-    pub version: u16,
-    /// Wire schema version
-    pub schema_version: u16,
-    /// Wire format
-    pub wire_format: crate::WireFormat,
-    /// Message content
-    pub content: MlsMessage,
-    /// Frame size (for streaming)
-    pub frame_size: u32,
-}
-
-impl MessageFrame {
-    /// Create a new message frame
-    pub fn new(content: MlsMessage) -> Self {
-        let serialized_size = bincode::serialized_size(&content).unwrap_or(0) as u32;
-
-        Self {
-            version: crate::MLS_VERSION,
-            schema_version: 1,
-            wire_format: crate::WireFormat::default(),
-            content,
-            frame_size: serialized_size,
-        }
-    }
-
-    /// Serialize the frame for transmission
-    pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        let cfg = bincode::DefaultOptions::new().with_limit(1_048_576);
-        cfg.serialize(self)
-            .map_err(|e| MlsError::SerializationError(e.to_string()))
-    }
-
-    /// Deserialize frame from bytes
-    pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        let cfg = bincode::DefaultOptions::new().with_limit(1_048_576);
-        cfg.deserialize(data)
-            .map_err(|e| MlsError::SerializationError(e.to_string()))
-    }
-}
-
-/// Protocol state machine for processing messages
-#[derive(Debug)]
-pub struct ProtocolStateMachine {
-    current_epoch: EpochNumber,
-    pending_proposals: Vec<Proposal>,
-    #[allow(dead_code)] // Future use for message ordering
-    message_cache: Vec<MlsMessage>,
-}
-
-impl ProtocolStateMachine {
-    /// Create a new protocol state machine
-    pub fn new(initial_epoch: EpochNumber) -> Self {
-        Self {
-            current_epoch: initial_epoch,
-            pending_proposals: Vec::new(),
-            message_cache: Vec::new(),
-        }
-    }
-
-    /// Process an incoming MLS message
-    pub fn process_message(&mut self, message: MlsMessage) -> Result<Vec<ProtocolEvent>> {
-        let mut events = Vec::new();
-
-        // Validate epoch
-        if message.epoch() < self.current_epoch {
-            return Err(MlsError::InvalidEpoch {
-                expected: self.current_epoch,
-                actual: message.epoch(),
-            });
-        }
-
-        match message {
-            MlsMessage::Handshake(handshake) => {
-                events.extend(self.process_handshake(handshake)?);
-            }
-            MlsMessage::Application(app) => {
-                events.push(ProtocolEvent::ApplicationMessage {
-                    sender: app.sender,
-                    ciphertext: app.ciphertext,
-                });
-            }
-            MlsMessage::Welcome(welcome) => {
-                events.push(ProtocolEvent::WelcomeReceived {
-                    new_members: welcome.new_members,
-                    group_info: welcome.group_info,
-                });
-            }
-        }
-
-        Ok(events)
-    }
-
-    /// Process a handshake message
-    fn process_handshake(&mut self, handshake: HandshakeMessage) -> Result<Vec<ProtocolEvent>> {
-        let mut events = Vec::new();
-
-        // Parse handshake content (simplified)
-        if let Ok(proposal) = bincode::deserialize::<Proposal>(&handshake.content) {
-            self.pending_proposals.push(proposal.clone());
-            events.push(ProtocolEvent::ProposalReceived(proposal));
-        } else if let Ok(commit) = bincode::deserialize::<Commit>(&handshake.content) {
-            events.extend(self.process_commit(commit)?);
-        }
-
-        Ok(events)
-    }
-
-    /// Process a commit message
-    fn process_commit(&mut self, commit: Commit) -> Result<Vec<ProtocolEvent>> {
-        let mut events = Vec::new();
-
-        // Apply committed proposals
-        for proposal in &commit.proposals {
-            match proposal {
-                Proposal::Add { key_package, .. } => {
-                    events.push(ProtocolEvent::MemberAdded {
-                        member_id: key_package.credential.member_id(),
-                        key_package: key_package.clone(),
-                    });
-                }
-                Proposal::Remove { member_id, .. } => {
-                    events.push(ProtocolEvent::MemberRemoved {
-                        member_id: *member_id,
-                    });
-                }
-                Proposal::Update {
-                    key_package,
-                    member_id,
-                } => {
-                    events.push(ProtocolEvent::MemberUpdated {
-                        member_id: *member_id,
-                        key_package: key_package.clone(),
-                    });
-                }
-                Proposal::PreSharedKey { .. } => {
-                    events.push(ProtocolEvent::PreSharedKeyAdded);
-                }
-            }
-        }
-
-        // Clear pending proposals
-        self.pending_proposals.clear();
-
-        // Advance epoch
-        self.current_epoch = commit.epoch + 1;
-        events.push(ProtocolEvent::EpochAdvanced {
-            new_epoch: self.current_epoch,
-        });
-
-        Ok(events)
-    }
-
-    /// Get current epoch
-    pub fn current_epoch(&self) -> EpochNumber {
-        self.current_epoch
-    }
-
-    /// Get pending proposals
-    pub fn pending_proposals(&self) -> &[Proposal] {
-        &self.pending_proposals
-    }
-
-    /// Set current epoch (for group management)
-    pub fn set_epoch(&mut self, epoch: EpochNumber) {
-        self.current_epoch = epoch;
-    }
-}
-
-/// Events generated by the protocol state machine
-#[derive(Debug, Clone)]
-pub enum ProtocolEvent {
-    /// A proposal was received
-    ProposalReceived(Proposal),
-    /// A member was added to the group
-    MemberAdded {
-        member_id: MemberId,
-        key_package: KeyPackage,
-    },
-    /// A member was removed from the group
-    MemberRemoved { member_id: MemberId },
-    /// A member updated their key package
-    MemberUpdated {
-        member_id: MemberId,
-        key_package: KeyPackage,
-    },
-    /// Pre-shared key was added
-    PreSharedKeyAdded,
-    /// Epoch advanced
-    EpochAdvanced { new_epoch: EpochNumber },
-    /// Application message received
-    ApplicationMessage {
-        sender: MemberId,
-        ciphertext: Vec<u8>,
-    },
-    /// Welcome message received
-    WelcomeReceived {
-        new_members: Vec<MemberId>,
-        group_info: Vec<u8>,
-    },
-}
-
-/// Group identifier
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct GroupId(pub [u8; 32]);
-
-impl GroupId {
-    /// Generate a new random group ID
-    pub fn generate() -> Self {
-        let bytes = random_bytes(32);
-        let mut arr = [0u8; 32];
-        arr.copy_from_slice(&bytes);
-        Self(arr)
-    }
-}
-
-impl std::fmt::Display for GroupId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
-    }
-}
-
-/// Group configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GroupConfig {
-    /// Cipher suite for the group
-    pub cipher_suite: CipherSuite,
+/// Protocol constants
+pub mod constants {
     /// Maximum group size
-    pub max_members: usize,
-    /// Key rotation interval
-    pub key_rotation_interval: std::time::Duration,
-    /// Group extensions
-    pub extensions: Vec<Extension>,
+    pub const MAX_GROUP_SIZE: usize = 1000;
+    /// Maximum message size in bytes
+    pub const MAX_MESSAGE_SIZE: usize = 1024 * 1024; // 1MB
+    /// Default epoch lifetime in seconds
+    pub const EPOCH_LIFETIME: u64 = 86400; // 24 hours
 }
 
-impl Default for GroupConfig {
-    fn default() -> Self {
-        Self {
-            cipher_suite: CipherSuite::default(),
-            max_members: crate::MAX_GROUP_SIZE,
-            key_rotation_interval: crate::DEFAULT_KEY_ROTATION_INTERVAL,
-            extensions: Vec::new(),
+/// Validation functions for protocol messages
+impl HandshakeMessage {
+    /// Validate the handshake message
+    pub fn validate(&self) -> Result<()> {
+        if self.content.is_empty() {
+            return Err(MlsError::InvalidMessage("Empty handshake content".to_string()));
         }
+        if self.content.len() > constants::MAX_MESSAGE_SIZE {
+            return Err(MlsError::InvalidMessage("Message too large".to_string()));
+        }
+        Ok(())
+    }
+}
+
+impl ApplicationMessage {
+    /// Validate the application message
+    pub fn validate(&self) -> Result<()> {
+        if self.ciphertext.is_empty() {
+            return Err(MlsError::InvalidMessage("Empty ciphertext".to_string()));
+        }
+        if self.ciphertext.len() > constants::MAX_MESSAGE_SIZE {
+            return Err(MlsError::InvalidMessage("Message too large".to_string()));
+        }
+        Ok(())
+    }
+}
+
+impl WelcomeMessage {
+    /// Validate the welcome message
+    pub fn validate(&self) -> Result<()> {
+        if self.group_info.is_empty() {
+            return Err(MlsError::InvalidMessage("Empty group info".to_string()));
+        }
+        if self.secrets.is_empty() {
+            return Err(MlsError::InvalidMessage("No encrypted secrets".to_string()));
+        }
+        Ok(())
+    }
+}
+
+/// State machine for protocol message processing
+#[derive(Debug, Clone)]
+pub struct ProtocolState {
+    pub epoch: EpochNumber,
+    pub pending_proposals: Vec<ProposalContent>,
+    pub confirmed_transcript_hash: Vec<u8>,
+}
+
+impl ProtocolState {
+    /// Create a new protocol state
+    pub fn new(epoch: EpochNumber) -> Self {
+        Self {
+            epoch,
+            pending_proposals: Vec::new(),
+            confirmed_transcript_hash: Vec::new(),
+        }
+    }
+
+    /// Add a proposal to pending list
+    pub fn add_proposal(&mut self, proposal: ProposalContent) {
+        self.pending_proposals.push(proposal);
+    }
+
+    /// Clear pending proposals after commit
+    pub fn clear_proposals(&mut self) {
+        self.pending_proposals.clear();
+    }
+
+    /// Update transcript hash
+    pub fn update_transcript(&mut self, data: &[u8]) {
+        let hasher = Hash::new(CipherSuite::default());
+        let mut input = self.confirmed_transcript_hash.clone();
+        input.extend_from_slice(data);
+        self.confirmed_transcript_hash = hasher.hash(&input);
+    }
+}
+
+/// Serialization helpers
+impl MlsMessage {
+    /// Serialize message to bytes
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        bincode::DefaultOptions::new()
+            .serialize(self)
+            .map_err(|e| MlsError::SerializationError(e.to_string()))
+    }
+
+    /// Deserialize message from bytes
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        bincode::DefaultOptions::new()
+            .deserialize(data)
+            .map_err(|e| MlsError::DeserializationError(e.to_string()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::KeyPair;
 
     #[test]
-    fn test_group_id_generation() {
-        let id1 = GroupId::generate();
-        let id2 = GroupId::generate();
-
-        assert_ne!(id1, id2);
-        assert_ne!(id1.to_string(), id2.to_string());
-    }
-
-    #[test]
-    fn test_message_frame() {
-        let app_msg = ApplicationMessage {
-            schema_version: 1,
-            group_id: GroupId::generate(),
-            epoch: 1,
+    fn test_message_serialization() {
+        let msg = HandshakeMessage {
+            epoch: 0,
             sender: MemberId::generate(),
-            sequence: 1,
-            ciphertext: vec![1, 2, 3, 4],
-            signature: Signature::from_bytes(&[0u8; 64]),
-            timestamp: SystemTime::now(),
+            content: vec![1, 2, 3],
+            signature: create_test_signature(),
         };
 
-        let frame = MessageFrame::new(MlsMessage::Application(app_msg));
-        assert_eq!(frame.version, crate::MLS_VERSION);
-        assert!(frame.frame_size > 0);
+        let mls_msg = MlsMessage::Handshake(msg);
+        let bytes = mls_msg.to_bytes().unwrap();
+        let decoded = MlsMessage::from_bytes(&bytes).unwrap();
+
+        assert_eq!(mls_msg.epoch(), decoded.epoch());
+        assert_eq!(mls_msg.sender(), decoded.sender());
     }
 
     #[test]
-    fn test_protocol_state_machine() {
-        let state = ProtocolStateMachine::new(0);
-        assert_eq!(state.current_epoch(), 0);
-        assert!(state.pending_proposals().is_empty());
-    }
-
-    #[test]
-    fn test_proposal_types() {
-        let member_id = MemberId::generate();
-        let keypair = KeyPair::generate(CipherSuite::default());
-        let cred = Credential::new_basic(member_id, None, &keypair.signing_key, keypair.suite).unwrap();
-        let key_package = KeyPackage::new(keypair, cred)
-        .unwrap();
-
-        let add_proposal = Proposal::Add {
-            key_package: key_package.clone(),
-            proposer: member_id,
+    fn test_handshake_validation() {
+        let valid = HandshakeMessage {
+            epoch: 0,
+            sender: MemberId::generate(),
+            content: vec![1, 2, 3],
+            signature: create_test_signature(),
         };
+        assert!(valid.validate().is_ok());
 
-        assert_eq!(add_proposal.proposer(), member_id);
-        assert_eq!(add_proposal.proposal_type(), "add");
-    }
-
-    #[test]
-    fn test_message_epoch_extraction() {
-        let group_id = GroupId::generate();
-        let sender = MemberId::generate();
-        let epoch = 42;
-
-        let handshake = MlsMessage::Handshake(HandshakeMessage {
-            schema_version: 1,
-            group_id,
-            epoch,
-            sender,
-            sequence: 1,
+        let empty = HandshakeMessage {
+            epoch: 0,
+            sender: MemberId::generate(),
             content: vec![],
-            confirmation_tag: vec![],
-            signature: Signature::from_bytes(&[0u8; 64]),
-            timestamp: SystemTime::now(),
+            signature: create_test_signature(),
+        };
+        assert!(empty.validate().is_err());
+    }
+
+    #[test]
+    fn test_protocol_state() {
+        let mut state = ProtocolState::new(0);
+        assert!(state.pending_proposals.is_empty());
+
+        let proposal = ProposalContent::Remove(RemoveProposal {
+            removed: MemberId::generate(),
+        });
+        state.add_proposal(proposal);
+        assert_eq!(state.pending_proposals.len(), 1);
+
+        state.clear_proposals();
+        assert!(state.pending_proposals.is_empty());
+    }
+
+    #[test]
+    fn test_tree_node_types() {
+        let leaf = TreeNode::Leaf(LeafNode {
+            key_package: None,
+            unmerged_leaves: vec![],
         });
 
-        assert_eq!(handshake.epoch(), epoch);
-        assert_eq!(handshake.sender(), sender);
+        let parent = TreeNode::Parent(ParentNode {
+            public_key: None,
+            unmerged_leaves: vec![],
+        });
+
+        match leaf {
+            TreeNode::Leaf(_) => (),
+            _ => panic!("Expected leaf node"),
+        }
+
+        match parent {
+            TreeNode::Parent(_) => (),
+            _ => panic!("Expected parent node"),
+        }
+    }
+
+    #[test]
+    fn test_message_type_equality() {
+        assert_eq!(MessageType::Handshake, MessageType::Handshake);
+        assert_ne!(MessageType::Handshake, MessageType::Application);
+    }
+
+    #[test]
+    fn test_group_info_serialization() {
+        let info = GroupInfo {
+            group_id: vec![1, 2, 3],
+            epoch: 42,
+            tree_hash: vec![4, 5, 6],
+            confirmed_transcript_hash: vec![7, 8, 9],
+            extensions: vec![],
+            confirmation_tag: vec![10, 11, 12],
+            signer: MemberId::generate(),
+        };
+
+        let bytes = bincode::DefaultOptions::new().serialize(&info).unwrap();
+        let decoded: GroupInfo = bincode::DefaultOptions::new().deserialize(&bytes).unwrap();
+
+        assert_eq!(info.group_id, decoded.group_id);
+        assert_eq!(info.epoch, decoded.epoch);
+    }
+
+    #[test]
+    fn test_update_path_construction() {
+        let keypair = KeyPair::generate(CipherSuite::default());
+        let member_id = MemberId::generate();
+        let cred = Credential::new_basic(member_id, None, &keypair, keypair.suite).unwrap();
+        let key_package = KeyPackage::new(keypair, cred).unwrap();
+
+        let path = UpdatePath {
+            leaf_key_package: key_package,
+            nodes: vec![],
+        };
+
+        assert!(path.nodes.is_empty());
+    }
+
+    // Helper function to create test signature
+    fn create_test_signature() -> MlDsaSignature {
+        let keypair = KeyPair::generate(CipherSuite::default());
+        keypair.sign(b"test").unwrap()
+    }
+
+    #[test]
+    fn test_encrypted_path_secret() {
+        let keypair1 = KeyPair::generate(CipherSuite::default());
+        let keypair2 = KeyPair::generate(CipherSuite::default());
+        let member_id = MemberId::generate();
+        
+        // Create encrypted path secret using ML-KEM
+        let (ciphertext, _shared_secret) = keypair1.encapsulate(keypair2.public_key()).unwrap();
+        
+        let eps = EncryptedPathSecret {
+            recipient: member_id,
+            ciphertext,
+        };
+        
+        assert_eq!(eps.recipient, member_id);
+    }
+
+    #[test]
+    fn test_welcome_message_validation() {
+        let valid = WelcomeMessage {
+            epoch: 0,
+            sender: MemberId::generate(),
+            cipher_suite: CipherSuite::default(),
+            group_info: vec![1, 2, 3],
+            secrets: vec![EncryptedGroupSecrets {
+                recipient_key_package_hash: vec![1],
+                encrypted_group_info: vec![2],
+                encrypted_path_secret: vec![3],
+            }],
+            signature: create_test_signature(),
+        };
+        assert!(valid.validate().is_ok());
+
+        let no_secrets = WelcomeMessage {
+            epoch: 0,
+            sender: MemberId::generate(),
+            cipher_suite: CipherSuite::default(),
+            group_info: vec![1, 2, 3],
+            secrets: vec![],
+            signature: create_test_signature(),
+        };
+        assert!(no_secrets.validate().is_err());
     }
 }
