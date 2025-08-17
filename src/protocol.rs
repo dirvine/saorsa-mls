@@ -4,7 +4,6 @@ use crate::{EpochNumber, MessageSequence, MlsError, Result, crypto::*, member::*
 use bincode::Options;
 use saorsa_pqc::api::MlDsaSignature;
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
 
 /// MLS message types
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,13 +281,13 @@ impl WelcomeMessage {
 
 /// State machine for protocol message processing
 #[derive(Debug, Clone)]
-pub struct ProtocolState {
+pub struct ProtocolSessionState {
     pub epoch: EpochNumber,
     pub pending_proposals: Vec<ProposalContent>,
     pub confirmed_transcript_hash: Vec<u8>,
 }
 
-impl ProtocolState {
+impl ProtocolSessionState {
     /// Create a new protocol state
     pub fn new(epoch: EpochNumber) -> Self {
         Self {
@@ -331,6 +330,228 @@ impl MlsMessage {
         bincode::DefaultOptions::new()
             .deserialize(data)
             .map_err(|e| MlsError::DeserializationError(e.to_string()))
+    }
+}
+
+/// Configuration for an MLS group
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupConfig {
+    /// Protocol version
+    pub protocol_version: u16,
+    /// Cipher suite identifier  
+    pub cipher_suite: u16,
+    /// Maximum number of members
+    pub max_members: Option<u32>,
+    /// Group lifetime in seconds
+    pub lifetime: Option<u64>,
+    /// Schema version for forward compatibility
+    pub schema_version: u8,
+}
+
+impl GroupConfig {
+    /// Create a new group configuration
+    pub fn new(protocol_version: u16, cipher_suite: u16) -> Self {
+        Self {
+            protocol_version,
+            cipher_suite,
+            max_members: None,
+            lifetime: None,
+            schema_version: 1,
+        }
+    }
+    
+    /// Set maximum number of members
+    pub fn with_max_members(mut self, max_members: u32) -> Self {
+        self.max_members = Some(max_members);
+        self
+    }
+    
+    /// Set group lifetime
+    pub fn with_lifetime(mut self, lifetime: u64) -> Self {
+        self.lifetime = Some(lifetime);
+        self
+    }
+}
+
+impl Default for GroupConfig {
+    fn default() -> Self {
+        Self::new(1, 1) // Default protocol and cipher suite
+    }
+}
+
+/// Unique identifier for an MLS group
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GroupId(Vec<u8>);
+
+impl GroupId {
+    /// Create a new group ID from bytes
+    pub fn new(id: Vec<u8>) -> Self {
+        Self(id)
+    }
+    
+    /// Generate a random group ID
+    pub fn generate() -> Self {
+        use rand::RngCore;
+        let mut rng = rand::thread_rng();
+        let mut id = vec![0u8; 32];
+        rng.fill_bytes(&mut id);
+        Self(id)
+    }
+    
+    /// Get the group ID as bytes
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+    
+    /// Convert to bytes vector
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+impl From<Vec<u8>> for GroupId {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+}
+
+impl From<&[u8]> for GroupId {
+    fn from(bytes: &[u8]) -> Self {
+        Self(bytes.to_vec())
+    }
+}
+
+impl AsRef<[u8]> for GroupId {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for GroupId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", hex::encode(&self.0))
+    }
+}
+
+/// State machine for managing MLS protocol state
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProtocolStateMachine {
+    /// Current epoch number
+    pub epoch: u64,
+    /// Current state
+    pub state: ProtocolState,
+    /// Schema version for forward compatibility
+    pub schema_version: u8,
+}
+
+/// Protocol states
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProtocolState {
+    /// Initial state before group creation
+    Initial,
+    /// Group is being created
+    Creating,
+    /// Group is active and operational
+    Active,
+    /// Group is being updated
+    Updating,
+    /// Group has been terminated
+    Terminated,
+}
+
+impl ProtocolStateMachine {
+    /// Create a new protocol state machine
+    pub fn new(epoch: u64) -> Self {
+        Self {
+            epoch,
+            state: ProtocolState::Initial,
+            schema_version: 1,
+        }
+    }
+    
+    /// Transition to creating state
+    pub fn start_creation(&mut self) -> Result<()> {
+        match self.state {
+            ProtocolState::Initial => {
+                self.state = ProtocolState::Creating;
+                Ok(())
+            }
+            _ => Err(MlsError::InvalidGroupState(format!(
+                "Cannot start creation from state {:?}", self.state
+            ))),
+        }
+    }
+    
+    /// Transition to active state
+    pub fn activate(&mut self) -> Result<()> {
+        match self.state {
+            ProtocolState::Creating => {
+                self.state = ProtocolState::Active;
+                Ok(())
+            }
+            _ => Err(MlsError::InvalidGroupState(format!(
+                "Cannot activate from state {:?}", self.state
+            ))),
+        }
+    }
+    
+    /// Start an update operation
+    pub fn start_update(&mut self) -> Result<()> {
+        match self.state {
+            ProtocolState::Active => {
+                self.state = ProtocolState::Updating;
+                Ok(())
+            }
+            _ => Err(MlsError::InvalidGroupState(format!(
+                "Cannot start update from state {:?}", self.state
+            ))),
+        }
+    }
+    
+    /// Complete an update operation
+    pub fn complete_update(&mut self) -> Result<()> {
+        match self.state {
+            ProtocolState::Updating => {
+                self.state = ProtocolState::Active;
+                self.epoch += 1;
+                Ok(())
+            }
+            _ => Err(MlsError::InvalidGroupState(format!(
+                "Cannot complete update from state {:?}", self.state
+            ))),
+        }
+    }
+    
+    /// Terminate the group
+    pub fn terminate(&mut self) -> Result<()> {
+        if matches!(self.state, ProtocolState::Terminated) {
+            return Err(MlsError::InvalidGroupState(
+                "Group is already terminated".to_string()
+            ));
+        }
+        
+        self.state = ProtocolState::Terminated;
+        Ok(())
+    }
+    
+    /// Get current state
+    pub fn state(&self) -> &ProtocolState {
+        &self.state
+    }
+    
+    /// Get current epoch
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+    
+    /// Check if group is active
+    pub fn is_active(&self) -> bool {
+        matches!(self.state, ProtocolState::Active)
+    }
+    
+    /// Check if group is terminated
+    pub fn is_terminated(&self) -> bool {
+        matches!(self.state, ProtocolState::Terminated)
     }
 }
 
@@ -377,7 +598,7 @@ mod tests {
 
     #[test]
     fn test_protocol_state() {
-        let mut state = ProtocolState::new(0);
+        let mut state = ProtocolSessionState::new(0);
         assert!(state.pending_proposals.is_empty());
 
         let proposal = ProposalContent::Remove(RemoveProposal {

@@ -7,6 +7,7 @@ use crate::{EpochNumber, MlsError, MlsStats, Result, crypto::*, member::*, proto
 use bincode::Options;
 use dashmap::DashMap;
 use parking_lot::RwLock;
+use saorsa_pqc::api::MlKemPublicKey;
 use std::{
     sync::{
         Arc,
@@ -540,7 +541,7 @@ pub struct TreeKemState {
 
 impl TreeKemState {
     /// Create new TreeKEM state with initial member
-    pub fn new(initial_key: x25519_dalek::PublicKey) -> Result<Self> {
+    pub fn new(initial_key: MlKemPublicKey) -> Result<Self> {
         let root_secret = random_bytes(32);
         let mut state = Self {
             nodes: Vec::new(),
@@ -555,7 +556,7 @@ impl TreeKemState {
     }
 
     /// Add a leaf node (new member)
-    pub fn add_leaf(&mut self, position: usize, public_key: x25519_dalek::PublicKey) -> Result<()> {
+    pub fn add_leaf(&mut self, position: usize, public_key: MlKemPublicKey) -> Result<()> {
         // Ensure tree capacity
         let required_size = (position + 1) * 2; // Binary tree property
         if self.nodes.len() < required_size {

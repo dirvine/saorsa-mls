@@ -405,6 +405,133 @@ impl LifetimeExtension {
     }
 }
 
+/// Represents a member in an MLS group
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupMember {
+    /// Member's unique identity
+    pub identity: MemberIdentity,
+    /// Member's index in the group
+    pub index: u32,
+    /// Whether the member is active
+    pub active: bool,
+    /// Schema version for forward compatibility
+    pub schema_version: u8,
+}
+
+impl GroupMember {
+    /// Create a new group member
+    pub fn new(identity: MemberIdentity, index: u32) -> Self {
+        Self {
+            identity,
+            index,
+            active: true,
+            schema_version: 1,
+        }
+    }
+    
+    /// Mark member as inactive
+    pub fn deactivate(&mut self) {
+        self.active = false;
+    }
+    
+    /// Check if member is active
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+    
+    /// Get member index
+    pub fn index(&self) -> u32 {
+        self.index
+    }
+    
+    /// Get member identity
+    pub fn identity(&self) -> &MemberIdentity {
+        &self.identity
+    }
+}
+
+/// Registry for managing group members
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemberRegistry {
+    /// Members by their index
+    members: HashMap<u32, GroupMember>,
+    /// Next available index
+    next_index: u32,
+    /// Schema version for forward compatibility
+    pub schema_version: u8,
+}
+
+impl MemberRegistry {
+    /// Create a new member registry
+    pub fn new() -> Self {
+        Self {
+            members: HashMap::new(),
+            next_index: 0,
+            schema_version: 1,
+        }
+    }
+    
+    /// Add a new member to the registry
+    pub fn add_member(&mut self, identity: MemberIdentity) -> Result<u32> {
+        let index = self.next_index;
+        let member = GroupMember::new(identity, index);
+        
+        if self.members.insert(index, member).is_some() {
+            return Err(MlsError::InvalidGroupState(format!("Member index {} already exists", index)));
+        }
+        
+        self.next_index += 1;
+        Ok(index)
+    }
+    
+    /// Remove a member from the registry
+    pub fn remove_member(&mut self, index: u32) -> Result<GroupMember> {
+        self.members.remove(&index)
+            .ok_or_else(|| MlsError::MemberNotFound(MemberId(vec![index as u8])))
+    }
+    
+    /// Get a member by index
+    pub fn get_member(&self, index: u32) -> Option<&GroupMember> {
+        self.members.get(&index)
+    }
+    
+    /// Get a mutable reference to a member
+    pub fn get_member_mut(&mut self, index: u32) -> Option<&mut GroupMember> {
+        self.members.get_mut(&index)
+    }
+    
+    /// Get all active members
+    pub fn active_members(&self) -> impl Iterator<Item = &GroupMember> {
+        self.members.values().filter(|m| m.is_active())
+    }
+    
+    /// Get total number of members (including inactive)
+    pub fn total_members(&self) -> usize {
+        self.members.len()
+    }
+    
+    /// Get number of active members
+    pub fn active_member_count(&self) -> usize {
+        self.members.values().filter(|m| m.is_active()).count()
+    }
+    
+    /// Check if registry is empty
+    pub fn is_empty(&self) -> bool {
+        self.members.is_empty()
+    }
+    
+    /// Get all member indices
+    pub fn member_indices(&self) -> impl Iterator<Item = u32> + '_ {
+        self.members.keys().copied()
+    }
+}
+
+impl Default for MemberRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

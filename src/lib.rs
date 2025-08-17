@@ -90,6 +90,12 @@ pub enum MlsError {
     #[error("TreeKEM operation failed: {0}")]
     TreeKemError(String),
 
+    #[error("Invalid message: {0}")]
+    InvalidMessage(String),
+
+    #[error("Deserialization error: {0}")]
+    DeserializationError(String),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
