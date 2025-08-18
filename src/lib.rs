@@ -4,10 +4,13 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::all, rust_2018_idioms)]
 
-//! # Saorsa MLS - Message Layer Security Protocol
+//! # Saorsa MLS - Message Layer Security Protocol (RFC 9420) with Post-Quantum Cryptography
 //!
-//! This crate implements the Message Layer Security (MLS) protocol for secure group communication
-//! with forward secrecy and post-compromise security. MLS provides:
+//! This crate implements the Message Layer Security (MLS) protocol as specified in
+//! [RFC 9420](https://datatracker.ietf.org/doc/rfc9420/) for secure group communication,
+//! enhanced with post-quantum cryptographic algorithms for quantum resistance.
+//! 
+//! MLS provides:
 //!
 //! - **End-to-end encryption** for group messaging
 //! - **Forward secrecy** - past messages remain secure even if keys are compromised
