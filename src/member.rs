@@ -1,11 +1,11 @@
 //! Member identity and key management for MLS groups
 
 use crate::{
-    crypto::{CipherSuite, KeyPair, DebugMlDsaSignature, DebugMlDsaPublicKey},
     MlsError, Result,
+    crypto::{CipherSuite, DebugMlDsaPublicKey, DebugMlDsaSignature, KeyPair},
 };
 use bincode::Options;
-use saorsa_pqc::api::{MlDsaSignature, MlDsaPublicKey};
+use saorsa_pqc::api::{MlDsaPublicKey, MlDsaSignature};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -67,7 +67,7 @@ impl MemberIdentity {
     pub fn with_name(name: String) -> Result<Self> {
         let id = MemberId::generate();
         let mut identity = Self::generate(id)?;
-        
+
         // Update credential with name
         let suite = identity.key_package.cipher_suite;
         // We do not have the signing key here; regenerate fresh keys and key package
@@ -75,7 +75,7 @@ impl MemberIdentity {
         identity.name = Some(name.clone());
         identity.credential = Credential::new_basic(id, Some(name), &keypair, suite)?;
         identity.key_package = KeyPackage::new(keypair, identity.credential.clone())?;
-        
+
         Ok(identity)
     }
 
@@ -132,11 +132,11 @@ impl Credential {
         let mut identity = Vec::new();
         identity.extend_from_slice(b"MLS 1.0 Credential");
         identity.extend_from_slice(member_id.as_bytes());
-        
+
         if let Some(ref name) = name {
             identity.extend_from_slice(name.as_bytes());
         }
-        
+
         // Add cipher suite information
         let suite_bytes = bincode::DefaultOptions::new()
             .serialize(&suite)
@@ -155,8 +155,12 @@ impl Credential {
     /// Get the credential type
     pub fn credential_type(&self) -> CredentialType {
         match self {
-            Self::Basic { credential_type, .. } => credential_type.clone(),
-            Self::Certificate { credential_type, .. } => credential_type.clone(),
+            Self::Basic {
+                credential_type, ..
+            } => credential_type.clone(),
+            Self::Certificate {
+                credential_type, ..
+            } => credential_type.clone(),
         }
     }
 
@@ -204,7 +208,9 @@ impl KeyPackage {
     pub fn new(keypair: KeyPair, credential: Credential) -> Result<Self> {
         // Verify the credential against the provided verifying key
         if !credential.verify(keypair.verifying_key()) {
-            return Err(MlsError::InvalidGroupState("invalid credential signature".to_string()));
+            return Err(MlsError::InvalidGroupState(
+                "invalid credential signature".to_string(),
+            ));
         }
 
         let mut package = Self {
@@ -228,7 +234,9 @@ impl KeyPackage {
     pub fn verify_signature(&self, data: &[u8], signature: &MlDsaSignature) -> bool {
         use saorsa_pqc::api::MlDsa;
         let ml_dsa = MlDsa::new(self.cipher_suite.ml_dsa_variant());
-        ml_dsa.verify(&self.verifying_key.0, data, signature).is_ok()
+        ml_dsa
+            .verify(&self.verifying_key.0, data, signature)
+            .is_ok()
     }
 
     /// Verify the key package is self-consistent
@@ -242,22 +250,22 @@ impl KeyPackage {
         // Simplified serialization for signing
         let mut data = Vec::new();
         data.extend_from_slice(&self.version.to_be_bytes());
-        
+
         let suite_bytes = bincode::DefaultOptions::new()
             .serialize(&self.cipher_suite)
             .map_err(|e| MlsError::SerializationError(e.to_string()))?;
         data.extend_from_slice(&suite_bytes);
-        
+
         // Include public keys
         data.extend_from_slice(&self.verifying_key.0.to_bytes());
         data.extend_from_slice(&self.agreement_key);
-        
+
         // Include credential
         let cred_bytes = bincode::DefaultOptions::new()
             .serialize(&self.credential)
             .map_err(|e| MlsError::SerializationError(e.to_string()))?;
         data.extend_from_slice(&cred_bytes);
-        
+
         Ok(data)
     }
 }
@@ -387,7 +395,7 @@ impl LifetimeExtension {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        
+
         Self {
             not_before: now,
             not_after: now + duration.as_secs(),
@@ -400,7 +408,7 @@ impl LifetimeExtension {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        
+
         now >= self.not_before && now <= self.not_after
     }
 }
@@ -428,22 +436,22 @@ impl GroupMember {
             schema_version: 1,
         }
     }
-    
+
     /// Mark member as inactive
     pub fn deactivate(&mut self) {
         self.active = false;
     }
-    
+
     /// Check if member is active
     pub fn is_active(&self) -> bool {
         self.active
     }
-    
+
     /// Get member index
     pub fn index(&self) -> u32 {
         self.index
     }
-    
+
     /// Get member identity
     pub fn identity(&self) -> &MemberIdentity {
         &self.identity
@@ -470,69 +478,72 @@ impl MemberRegistry {
             schema_version: 1,
         }
     }
-    
+
     /// Add a new member to the registry
     pub fn add_member(&mut self, identity: MemberIdentity) -> Result<u32> {
         let index = self.next_index;
         let member = GroupMember::new(identity, index);
-        
+
         if self.members.insert(index, member).is_some() {
-            return Err(MlsError::InvalidGroupState(format!("Member index {} already exists", index)));
+            return Err(MlsError::InvalidGroupState(format!(
+                "Member index {} already exists",
+                index
+            )));
         }
-        
+
         self.next_index += 1;
         Ok(index)
     }
-    
+
     /// Remove a member from the registry
     pub fn remove_member(&mut self, index: u32) -> Result<GroupMember> {
-        self.members.remove(&index)
-            .ok_or_else(|| {
-                // Create a dummy MemberId for the error - this is just for error reporting
-                let mut uuid_bytes = [0u8; 16];
-                uuid_bytes[0..4].copy_from_slice(&index.to_be_bytes());
-                MlsError::MemberNotFound(MemberId::from_bytes(uuid_bytes))
-            })
+        self.members.remove(&index).ok_or_else(|| {
+            // Create a dummy MemberId for the error - this is just for error reporting
+            let mut uuid_bytes = [0u8; 16];
+            uuid_bytes[0..4].copy_from_slice(&index.to_be_bytes());
+            MlsError::MemberNotFound(MemberId::from_bytes(uuid_bytes))
+        })
     }
-    
+
     /// Get a member by index
     pub fn get_member(&self, index: u32) -> Option<&GroupMember> {
         self.members.get(&index)
     }
-    
+
     /// Get a mutable reference to a member
     pub fn get_member_mut(&mut self, index: u32) -> Option<&mut GroupMember> {
         self.members.get_mut(&index)
     }
-    
+
     /// Get all active members
     pub fn active_members(&self) -> impl Iterator<Item = &GroupMember> {
         self.members.values().filter(|m| m.is_active())
     }
-    
+
     /// Get total number of members (including inactive)
     pub fn total_members(&self) -> usize {
         self.members.len()
     }
-    
+
     /// Get number of active members
     pub fn active_member_count(&self) -> usize {
         self.members.values().filter(|m| m.is_active()).count()
     }
-    
+
     /// Check if registry is empty
     pub fn is_empty(&self) -> bool {
         self.members.is_empty()
     }
-    
+
     /// Get all member indices
     pub fn member_indices(&self) -> impl Iterator<Item = u32> + '_ {
         self.members.keys().copied()
     }
-    
+
     /// Find member index by MemberId
     pub fn find_member_index(&self, member_id: &MemberId) -> Option<u32> {
-        self.members.iter()
+        self.members
+            .iter()
             .find(|(_, member)| member.identity.id == *member_id)
             .map(|(index, _)| *index)
     }
@@ -589,7 +600,13 @@ mod tests {
     #[test]
     fn test_credential_verification() {
         let keypair = KeyPair::generate(CipherSuite::default());
-        let credential = Credential::new_basic(MemberId::generate(), Some("Test".to_string()), &keypair, keypair.suite).unwrap();
+        let credential = Credential::new_basic(
+            MemberId::generate(),
+            Some("Test".to_string()),
+            &keypair,
+            keypair.suite,
+        )
+        .unwrap();
 
         assert!(credential.verify(keypair.verifying_key()));
     }
@@ -597,9 +614,10 @@ mod tests {
     #[test]
     fn test_key_package_creation_and_verification() {
         let keypair = KeyPair::generate(CipherSuite::default());
-        let credential = Credential::new_basic(MemberId::generate(), None, &keypair, keypair.suite).unwrap();
+        let credential =
+            Credential::new_basic(MemberId::generate(), None, &keypair, keypair.suite).unwrap();
         let key_package = KeyPackage::new(keypair, credential).unwrap();
-        
+
         assert!(key_package.verify().unwrap());
     }
 
@@ -607,7 +625,7 @@ mod tests {
     fn test_member_state() {
         let identity = MemberIdentity::generate(MemberId::generate()).unwrap();
         let mut state = MemberState::new(identity, 0);
-        
+
         assert_eq!(state.generation, 0);
         state.increment_generation();
         assert_eq!(state.generation, 1);
@@ -617,8 +635,10 @@ mod tests {
     fn test_extension_serialization() {
         let ext = Extension::ApplicationId(vec![1, 2, 3]);
         let serialized = bincode::DefaultOptions::new().serialize(&ext).unwrap();
-        let deserialized: Extension = bincode::DefaultOptions::new().deserialize(&serialized).unwrap();
-        
+        let deserialized: Extension = bincode::DefaultOptions::new()
+            .deserialize(&serialized)
+            .unwrap();
+
         match deserialized {
             Extension::ApplicationId(data) => assert_eq!(data, vec![1, 2, 3]),
             _ => panic!("Wrong extension type"),
@@ -629,7 +649,7 @@ mod tests {
     fn test_lifetime_extension() {
         let lifetime = LifetimeExtension::new(Duration::from_secs(3600));
         assert!(lifetime.is_valid());
-        
+
         // Test expired lifetime
         let expired = LifetimeExtension {
             not_before: 0,
@@ -642,10 +662,10 @@ mod tests {
     fn test_member_identity_update_name() {
         let identity1 = MemberIdentity::generate(MemberId::generate()).unwrap();
         let identity2 = MemberIdentity::with_name("Bob".to_string()).unwrap();
-        
+
         assert!(identity1.name.is_none());
         assert_eq!(identity2.name, Some("Bob".to_string()));
-        
+
         // Verify keys are different between identities
         assert_ne!(
             identity1.key_package.verifying_key.0.to_bytes(),
@@ -658,10 +678,10 @@ mod tests {
         let mut list = MemberList::new();
         let id1 = MemberId::generate();
         let id2 = MemberId::generate();
-        
+
         list.add(MemberIdentity::generate(id1).unwrap());
         list.add(MemberIdentity::generate(id2).unwrap());
-        
+
         let ids: Vec<MemberId> = list.member_ids();
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&id1));

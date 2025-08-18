@@ -102,10 +102,24 @@ jobs:
           target
         key: ${{ runner.os }}-cargo-proptest-${{ hashFiles('**/Cargo.lock') }}
     
+    - name: Check for integration tests
+      id: check-tests
+      run: |
+        if [ -d "tests" ] && [ "$(find tests -name "*.rs" | wc -l)" -gt 0 ]; then
+          echo "has-tests=true" >> $GITHUB_OUTPUT
+        else
+          echo "has-tests=false" >> $GITHUB_OUTPUT
+        fi
+    
     - name: Run property tests
+      if: steps.check-tests.outputs.has-tests == 'true'
       run: cargo test --verbose --test '*' -- --ignored --test-threads=1
       env:
         PROPTEST_CASES: 1000
+    
+    - name: Skip property tests
+      if: steps.check-tests.outputs.has-tests == 'false'
+      run: echo "No integration tests found, skipping property tests"
 
   # Security audit
   security:

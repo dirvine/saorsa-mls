@@ -1,6 +1,10 @@
 //! MLS protocol messages and state machine
 
-use crate::{EpochNumber, MessageSequence, MlsError, Result, crypto::{CipherSuite, Hash, DebugMlDsaSignature}, member::*};
+use crate::{
+    EpochNumber, MessageSequence, MlsError, Result,
+    crypto::{CipherSuite, DebugMlDsaSignature, Hash},
+    member::*,
+};
 use bincode::Options;
 use serde::{Deserialize, Serialize};
 
@@ -243,7 +247,9 @@ impl HandshakeMessage {
     /// Validate the handshake message
     pub fn validate(&self) -> Result<()> {
         if self.content.is_empty() {
-            return Err(MlsError::InvalidMessage("Empty handshake content".to_string()));
+            return Err(MlsError::InvalidMessage(
+                "Empty handshake content".to_string(),
+            ));
         }
         if self.content.len() > constants::MAX_MESSAGE_SIZE {
             return Err(MlsError::InvalidMessage("Message too large".to_string()));
@@ -358,13 +364,13 @@ impl GroupConfig {
             schema_version: 1,
         }
     }
-    
+
     /// Set maximum number of members
     pub fn with_max_members(mut self, max_members: u32) -> Self {
         self.max_members = Some(max_members);
         self
     }
-    
+
     /// Set group lifetime
     pub fn with_lifetime(mut self, lifetime: u64) -> Self {
         self.lifetime = Some(lifetime);
@@ -387,7 +393,7 @@ impl GroupId {
     pub fn new(id: Vec<u8>) -> Self {
         Self(id)
     }
-    
+
     /// Generate a random group ID
     pub fn generate() -> Self {
         use rand_core::{OsRng, RngCore};
@@ -395,12 +401,12 @@ impl GroupId {
         OsRng.fill_bytes(&mut id);
         Self(id)
     }
-    
+
     /// Get the group ID as bytes
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
-    
+
     /// Convert to bytes vector
     pub fn into_bytes(self) -> Vec<u8> {
         self.0
@@ -466,7 +472,7 @@ impl ProtocolStateMachine {
             schema_version: 1,
         }
     }
-    
+
     /// Transition to creating state
     pub fn start_creation(&mut self) -> Result<()> {
         match self.state {
@@ -475,11 +481,12 @@ impl ProtocolStateMachine {
                 Ok(())
             }
             _ => Err(MlsError::InvalidGroupState(format!(
-                "Cannot start creation from state {:?}", self.state
+                "Cannot start creation from state {:?}",
+                self.state
             ))),
         }
     }
-    
+
     /// Transition to active state
     pub fn activate(&mut self) -> Result<()> {
         match self.state {
@@ -488,11 +495,12 @@ impl ProtocolStateMachine {
                 Ok(())
             }
             _ => Err(MlsError::InvalidGroupState(format!(
-                "Cannot activate from state {:?}", self.state
+                "Cannot activate from state {:?}",
+                self.state
             ))),
         }
     }
-    
+
     /// Start an update operation
     pub fn start_update(&mut self) -> Result<()> {
         match self.state {
@@ -501,11 +509,12 @@ impl ProtocolStateMachine {
                 Ok(())
             }
             _ => Err(MlsError::InvalidGroupState(format!(
-                "Cannot start update from state {:?}", self.state
+                "Cannot start update from state {:?}",
+                self.state
             ))),
         }
     }
-    
+
     /// Complete an update operation
     pub fn complete_update(&mut self) -> Result<()> {
         match self.state {
@@ -515,43 +524,44 @@ impl ProtocolStateMachine {
                 Ok(())
             }
             _ => Err(MlsError::InvalidGroupState(format!(
-                "Cannot complete update from state {:?}", self.state
+                "Cannot complete update from state {:?}",
+                self.state
             ))),
         }
     }
-    
+
     /// Terminate the group
     pub fn terminate(&mut self) -> Result<()> {
         if matches!(self.state, ProtocolState::Terminated) {
             return Err(MlsError::InvalidGroupState(
-                "Group is already terminated".to_string()
+                "Group is already terminated".to_string(),
             ));
         }
-        
+
         self.state = ProtocolState::Terminated;
         Ok(())
     }
-    
+
     /// Get current state
     pub fn state(&self) -> &ProtocolState {
         &self.state
     }
-    
+
     /// Get current epoch
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
-    
+
     /// Check if group is active
     pub fn is_active(&self) -> bool {
         matches!(self.state, ProtocolState::Active)
     }
-    
+
     /// Check if group is terminated
     pub fn is_terminated(&self) -> bool {
         matches!(self.state, ProtocolState::Terminated)
     }
-    
+
     /// Set the epoch number (internal use)
     pub fn set_epoch(&mut self, epoch: u64) {
         self.epoch = epoch;
@@ -688,15 +698,15 @@ mod tests {
         let keypair1 = KeyPair::generate(CipherSuite::default());
         let keypair2 = KeyPair::generate(CipherSuite::default());
         let member_id = MemberId::generate();
-        
+
         // Create encrypted path secret using ML-KEM
         let (ciphertext, _shared_secret) = keypair1.encapsulate(keypair2.public_key()).unwrap();
-        
+
         let eps = EncryptedPathSecret {
             recipient: member_id,
             ciphertext: ciphertext.to_bytes(),
         };
-        
+
         assert_eq!(eps.recipient, member_id);
     }
 

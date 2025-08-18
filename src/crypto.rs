@@ -2,18 +2,16 @@
 //!
 //! This module provides post-quantum cryptographic operations using
 //! NIST-standardized algorithms from the saorsa-pqc library.
-//! 
+//!
 //! We use saorsa-pqc as the single source of truth for all cryptographic
 //! operations to ensure consistency and quantum-resistance.
 
 use crate::{MlsError, Result};
-use saorsa_pqc::{
-    api::{
-        MlKem, MlKemVariant, MlKemPublicKey, MlKemSecretKey, MlKemCiphertext, MlKemSharedSecret,
-        MlDsa, MlDsaVariant, MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature,
-    },
+use saorsa_pqc::api::{
+    MlDsa, MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature, MlDsaVariant, MlKem, MlKemCiphertext,
+    MlKemPublicKey, MlKemSecretKey, MlKemSharedSecret, MlKemVariant,
 };
-use serde::{Deserialize, Serialize, Deserializer, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Supported cipher suites for MLS with post-quantum algorithms
@@ -80,7 +78,7 @@ impl Hash {
     pub fn hash(&self, data: &[u8]) -> Vec<u8> {
         use saorsa_pqc::api::hash::Blake3Hasher;
         use saorsa_pqc::api::traits::Hash as HashTrait;
-        
+
         let mut hasher = Blake3Hasher::new();
         hasher.update(data);
         let output = hasher.finalize();
@@ -91,7 +89,7 @@ impl Hash {
     pub fn hmac(&self, key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
         use saorsa_pqc::api::hmac::HmacSha3_256;
         use saorsa_pqc::api::traits::Mac;
-        
+
         let mut mac = HmacSha3_256::new(key)
             .map_err(|e| MlsError::CryptoError(format!("HMAC key error: {:?}", e)))?;
         mac.update(data);
@@ -115,10 +113,10 @@ impl KeySchedule {
     pub fn derive_secret(&self, secret: &[u8], label: &str, context: &[u8]) -> Result<Vec<u8>> {
         use saorsa_pqc::api::kdf::HkdfSha3_256;
         use saorsa_pqc::api::traits::Kdf;
-        
+
         let info = self.build_hkdf_label(label, context, self.suite.hash_size());
         let mut output = vec![0u8; self.suite.hash_size()];
-        
+
         HkdfSha3_256::derive(secret, None, &info, &mut output)
             .map_err(|e| MlsError::CryptoError(format!("HKDF error: {:?}", e)))?;
         Ok(output)
@@ -133,7 +131,7 @@ impl KeySchedule {
         lengths: &[usize],
     ) -> Result<Vec<Vec<u8>>> {
         let mut results = Vec::new();
-        
+
         for (label, &length) in labels.iter().zip(lengths.iter()) {
             let key = self.derive_secret(secret, label, salt)?;
             results.push(key[..length].to_vec());
@@ -151,7 +149,7 @@ impl KeySchedule {
     ) -> Result<Vec<u8>> {
         use saorsa_pqc::api::kdf::HkdfSha3_256;
         use saorsa_pqc::api::traits::Kdf;
-        
+
         let mut output = vec![0u8; length];
         HkdfSha3_256::derive(secret, Some(salt), info, &mut output)
             .map_err(|e| MlsError::CryptoError(format!("HKDF error: {:?}", e)))?;
@@ -199,12 +197,14 @@ impl KeyPair {
     pub fn generate(suite: CipherSuite) -> Self {
         // Generate ML-DSA key pair for signing
         let ml_dsa = MlDsa::new(suite.ml_dsa_variant());
-        let (verifying_key, signing_key) = ml_dsa.generate_keypair()
+        let (verifying_key, signing_key) = ml_dsa
+            .generate_keypair()
             .expect("ML-DSA key generation should not fail");
 
         // Generate ML-KEM key pair for key encapsulation
         let ml_kem = MlKem::new(suite.ml_kem_variant());
-        let (kem_public, kem_secret) = ml_kem.generate_keypair()
+        let (kem_public, kem_secret) = ml_kem
+            .generate_keypair()
             .expect("ML-KEM key generation should not fail");
 
         Self {
@@ -229,21 +229,27 @@ impl KeyPair {
     /// Sign a message
     pub fn sign(&self, message: &[u8]) -> Result<MlDsaSignature> {
         let ml_dsa = MlDsa::new(self.suite.ml_dsa_variant());
-        ml_dsa.sign(&self.signing_key, message)
+        ml_dsa
+            .sign(&self.signing_key, message)
             .map_err(|e| MlsError::CryptoError(format!("Signing failed: {:?}", e)))
     }
 
     /// Verify a signature
     pub fn verify(&self, message: &[u8], signature: &MlDsaSignature) -> Result<bool> {
         let ml_dsa = MlDsa::new(self.suite.ml_dsa_variant());
-        ml_dsa.verify(&self.verifying_key, message, signature)
+        ml_dsa
+            .verify(&self.verifying_key, message, signature)
             .map_err(|e| MlsError::CryptoError(format!("Verification error: {:?}", e)))
     }
 
     /// Perform key encapsulation
-    pub fn encapsulate(&self, recipient_public: &MlKemPublicKey) -> Result<(MlKemCiphertext, MlKemSharedSecret)> {
+    pub fn encapsulate(
+        &self,
+        recipient_public: &MlKemPublicKey,
+    ) -> Result<(MlKemCiphertext, MlKemSharedSecret)> {
         let ml_kem = MlKem::new(self.suite.ml_kem_variant());
-        let (shared_secret, ciphertext) = ml_kem.encapsulate(recipient_public)
+        let (shared_secret, ciphertext) = ml_kem
+            .encapsulate(recipient_public)
             .map_err(|e| MlsError::CryptoError(format!("Encapsulation failed: {:?}", e)))?;
         Ok((ciphertext, shared_secret))
     }
@@ -251,7 +257,8 @@ impl KeyPair {
     /// Perform key decapsulation
     pub fn decapsulate(&self, ciphertext: &MlKemCiphertext) -> Result<MlKemSharedSecret> {
         let ml_kem = MlKem::new(self.suite.ml_kem_variant());
-        ml_kem.decapsulate(&self.kem_secret, ciphertext)
+        ml_kem
+            .decapsulate(&self.kem_secret, ciphertext)
             .map_err(|e| MlsError::CryptoError(format!("Decapsulation failed: {:?}", e)))
     }
 }
@@ -267,9 +274,11 @@ impl AeadCipher {
     /// Create a new AEAD cipher from key material
     pub fn new(key: Vec<u8>, suite: CipherSuite) -> Result<Self> {
         if key.len() != suite.key_size() {
-            return Err(MlsError::CryptoError(
-                format!("Invalid key size: expected {}, got {}", suite.key_size(), key.len())
-            ));
+            return Err(MlsError::CryptoError(format!(
+                "Invalid key size: expected {}, got {}",
+                suite.key_size(),
+                key.len()
+            )));
         }
 
         Ok(Self { key, suite })
@@ -288,23 +297,28 @@ impl AeadCipher {
 
         // Use saorsa-pqc's ChaCha20Poly1305
         use saorsa_pqc::api::symmetric::ChaCha20Poly1305 as PqcCipher;
-        
+
         // Convert key to the format expected by saorsa-pqc
-        let key_array: [u8; 32] = self.key.clone().try_into()
+        let key_array: [u8; 32] = self
+            .key
+            .clone()
+            .try_into()
             .map_err(|_| MlsError::CryptoError("Invalid key size".to_string()))?;
         let key = chacha20poly1305::Key::from(key_array);
-        
+
         let cipher = PqcCipher::new(&key);
-        
+
         // Convert nonce
-        let nonce_array: [u8; 12] = nonce.try_into()
+        let nonce_array: [u8; 12] = nonce
+            .try_into()
             .map_err(|_| MlsError::CryptoError("Invalid nonce size".to_string()))?;
         let nonce_obj = chacha20poly1305::Nonce::from(nonce_array);
-        
+
         // Encrypt with AAD
-        let ciphertext = cipher.encrypt_with_aad(&nonce_obj, plaintext, associated_data)
+        let ciphertext = cipher
+            .encrypt_with_aad(&nonce_obj, plaintext, associated_data)
             .map_err(|e| MlsError::CryptoError(format!("Encryption failed: {:?}", e)))?;
-        
+
         // Return nonce + ciphertext for wire format
         let mut result = nonce.to_vec();
         result.extend_from_slice(&ciphertext);
@@ -327,29 +341,34 @@ impl AeadCipher {
         if ciphertext.len() < 12 {
             return Err(MlsError::CryptoError("Ciphertext too short".to_string()));
         }
-        
+
         let actual_nonce = &ciphertext[..12];
         let actual_ciphertext = &ciphertext[12..];
-        
+
         // Use saorsa-pqc's ChaCha20Poly1305
         use saorsa_pqc::api::symmetric::ChaCha20Poly1305 as PqcCipher;
-        
+
         // Convert key to the format expected by saorsa-pqc
-        let key_array: [u8; 32] = self.key.clone().try_into()
+        let key_array: [u8; 32] = self
+            .key
+            .clone()
+            .try_into()
             .map_err(|_| MlsError::CryptoError("Invalid key size".to_string()))?;
         let key = chacha20poly1305::Key::from(key_array);
-        
+
         let cipher = PqcCipher::new(&key);
-        
+
         // Convert nonce
-        let nonce_array: [u8; 12] = actual_nonce.try_into()
+        let nonce_array: [u8; 12] = actual_nonce
+            .try_into()
             .map_err(|_| MlsError::CryptoError("Invalid nonce size".to_string()))?;
         let nonce_obj = chacha20poly1305::Nonce::from(nonce_array);
-        
+
         // Decrypt with AAD
-        let plaintext = cipher.decrypt_with_aad(&nonce_obj, actual_ciphertext, associated_data)
+        let plaintext = cipher
+            .decrypt_with_aad(&nonce_obj, actual_ciphertext, associated_data)
             .map_err(|e| MlsError::CryptoError(format!("Decryption failed: {:?}", e)))?;
-        
+
         Ok(plaintext)
     }
 
@@ -464,24 +483,21 @@ mod tests {
     fn test_key_generation() {
         let kp1 = KeyPair::generate(CipherSuite::default());
         let kp2 = KeyPair::generate(CipherSuite::default());
-        
+
         // Keys should be different
-        assert_ne!(
-            kp1.verifying_key.to_bytes(),
-            kp2.verifying_key.to_bytes()
-        );
+        assert_ne!(kp1.verifying_key.to_bytes(), kp2.verifying_key.to_bytes());
     }
 
     #[test]
     fn test_signing_and_verification() {
         let kp = KeyPair::generate(CipherSuite::default());
         let message = b"test message";
-        
+
         let signature = kp.sign(message).unwrap();
-        
+
         // Test with correct message
         assert!(kp.verify(message, &signature).unwrap());
-        
+
         // Test with wrong message - the ML-DSA verify should return an error for invalid signatures
         // Our verify method converts that error to Ok(false)
         let wrong_message = b"wrong message";
@@ -492,13 +508,13 @@ mod tests {
     fn test_key_encapsulation() {
         let kp1 = KeyPair::generate(CipherSuite::default());
         let kp2 = KeyPair::generate(CipherSuite::default());
-        
+
         // Encapsulate for kp2
         let (ciphertext, shared_secret1) = kp1.encapsulate(&kp2.kem_public).unwrap();
-        
+
         // Decapsulate with kp2's secret
         let shared_secret2 = kp2.decapsulate(&ciphertext).unwrap();
-        
+
         // Shared secrets should match
         assert_eq!(shared_secret1.to_bytes(), shared_secret2.to_bytes());
     }
@@ -624,10 +640,7 @@ pub mod serde_wrappers {
     {
         let bytes = ciphertext.to_bytes();
         let variant = ciphertext.variant();
-        serializer.serialize_str(&format!("{}:{}", 
-            variant as u8, 
-            hex::encode(&bytes)
-        ))
+        serializer.serialize_str(&format!("{}:{}", variant as u8, hex::encode(&bytes)))
     }
 
     /// Deserialize MlKemCiphertext
@@ -643,17 +656,17 @@ pub mod serde_wrappers {
         if parts.len() != 2 {
             return Err(D::Error::custom("Invalid MlKemCiphertext format"));
         }
-        
+
         let variant = match parts[0] {
             "0" => MlKemVariant::MlKem512,
             "1" => MlKemVariant::MlKem768,
             "2" => MlKemVariant::MlKem1024,
             _ => return Err(D::Error::custom("Invalid MlKemVariant")),
         };
-        
+
         let bytes = hex::decode(parts[1])
             .map_err(|e| D::Error::custom(format!("Hex decode error: {}", e)))?;
-        
+
         MlKemCiphertext::from_bytes(variant, &bytes)
             .map_err(|e| D::Error::custom(format!("MlKemCiphertext decode error: {:?}", e)))
     }
@@ -679,17 +692,19 @@ pub mod serde_wrappers {
     {
         use serde::de::Error;
         let s = String::deserialize(deserializer)?;
-        let bytes = hex::decode(&s)
-            .map_err(|e| D::Error::custom(format!("Hex decode error: {}", e)))?;
-        
+        let bytes =
+            hex::decode(&s).map_err(|e| D::Error::custom(format!("Hex decode error: {}", e)))?;
+
         // Create from bytes - we'll use MlDsa65 as default
-        if bytes.len() != 3309 { // ML-DSA-65 signature size
+        if bytes.len() != 3309 {
+            // ML-DSA-65 signature size
             return Err(D::Error::custom("Invalid MlDsaSignature size"));
         }
-        
-        let array: [u8; 3309] = bytes.try_into()
+
+        let array: [u8; 3309] = bytes
+            .try_into()
             .map_err(|_| D::Error::custom("Failed to convert to array"))?;
-        
+
         MlDsaSignature::from_bytes(MlDsaVariant::MlDsa65, &array)
             .map_err(|e| D::Error::custom(format!("MlDsaSignature decode error: {:?}", e)))
     }
@@ -715,17 +730,19 @@ pub mod serde_wrappers {
     {
         use serde::de::Error;
         let s = String::deserialize(deserializer)?;
-        let bytes = hex::decode(&s)
-            .map_err(|e| D::Error::custom(format!("Hex decode error: {}", e)))?;
-        
+        let bytes =
+            hex::decode(&s).map_err(|e| D::Error::custom(format!("Hex decode error: {}", e)))?;
+
         // Create from bytes - we'll use MlDsa65 as default
-        if bytes.len() != 1952 { // ML-DSA-65 public key size
+        if bytes.len() != 1952 {
+            // ML-DSA-65 public key size
             return Err(D::Error::custom("Invalid MlDsaPublicKey size"));
         }
-        
-        let array: [u8; 1952] = bytes.try_into()
+
+        let array: [u8; 1952] = bytes
+            .try_into()
             .map_err(|_| D::Error::custom("Failed to convert to array"))?;
-        
+
         MlDsaPublicKey::from_bytes(MlDsaVariant::MlDsa65, &array)
             .map_err(|e| D::Error::custom(format!("MlDsaPublicKey decode error: {:?}", e)))
     }

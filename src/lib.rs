@@ -9,7 +9,7 @@
 //! This crate implements the Message Layer Security (MLS) protocol as specified in
 //! [RFC 9420](https://datatracker.ietf.org/doc/rfc9420/) for secure group communication,
 //! enhanced with post-quantum cryptographic algorithms for quantum resistance.
-//! 
+//!
 //! MLS provides:
 //!
 //! - **End-to-end encryption** for group messaging

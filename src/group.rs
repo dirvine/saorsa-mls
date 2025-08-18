@@ -195,9 +195,7 @@ impl MlsGroup {
     pub async fn encrypt_message(&self, plaintext: &[u8]) -> Result<ApplicationMessage> {
         // Derive per-sender application key and base nonce
         let sender_id = self.creator.id;
-        let (app_key, base_nonce) = self
-            .get_sender_application_key_and_nonce(sender_id)
-            .await?;
+        let (app_key, base_nonce) = self.get_sender_application_key_and_nonce(sender_id).await?;
 
         let cipher = AeadCipher::new(app_key, CipherSuite::default())?;
 
@@ -307,7 +305,7 @@ impl MlsGroup {
             ))?
             .as_bytes()
             .to_vec();
-        
+
         // Create a fresh key schedule instead of accessing the stored one
         let key_schedule = KeySchedule::new(CipherSuite::default());
 
@@ -335,8 +333,10 @@ impl MlsGroup {
         // Cache
         self.secrets
             .insert(key_cache, crate::crypto::SecretBytes::from(app_key.clone()));
-        self.secrets
-            .insert(nonce_cache, crate::crypto::SecretBytes::from(base_nonce.clone()));
+        self.secrets.insert(
+            nonce_cache,
+            crate::crypto::SecretBytes::from(base_nonce.clone()),
+        );
 
         Ok((app_key, base_nonce))
     }
@@ -411,8 +411,10 @@ impl MlsGroup {
         ];
 
         for (label, secret) in labels.iter().zip(secrets.iter()) {
-            self.secrets
-                .insert(label.to_string(), crate::crypto::SecretBytes::from(secret.clone()));
+            self.secrets.insert(
+                label.to_string(),
+                crate::crypto::SecretBytes::from(secret.clone()),
+            );
         }
 
         // Update key schedule with scoped lock
@@ -460,9 +462,10 @@ impl MlsGroup {
     pub fn is_member_active(&self, member_id: &MemberId) -> bool {
         let members = self.members.read();
         if let Some(index) = members.find_member_index(member_id)
-            && let Some(member) = members.get_member(index) {
-                return member.is_active();
-            }
+            && let Some(member) = members.get_member(index)
+        {
+            return member.is_active();
+        }
         false
     }
 
