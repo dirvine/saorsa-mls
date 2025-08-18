@@ -1,0 +1,300 @@
+name: Security Audit
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run security audit daily at 3 AM UTC
+    - cron: '0 3 * * *'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cargo-audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-audit
+      uses: taiki-e/install-action@cargo-audit
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: audit-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Run cargo audit
+      run: cargo audit --deny warnings
+
+    - name: Run cargo audit with JSON output
+      run: cargo audit --json > audit-report.json
+      continue-on-error: true
+
+    - name: Upload audit report
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-audit-report
+        path: audit-report.json
+        retention-days: 30
+
+  cargo-deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install cargo-deny
+      uses: taiki-e/install-action@cargo-deny
+
+    - name: Check licenses
+      run: cargo deny check licenses
+
+    - name: Check advisories
+      run: cargo deny check advisories
+
+    - name: Check bans
+      run: cargo deny check bans
+
+    - name: Check sources
+      run: cargo deny check sources
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Dependency Review
+      uses: actions/dependency-review-action@v4
+      with:
+        fail-on-severity: moderate
+        allow-ghsas: |
+          # Add any specific advisories you want to allow (with justification)
+        deny-licenses: |
+          GPL-2.0, GPL-3.0
+          # Customize based on your license policy
+
+  semgrep:
+    name: Semgrep Security Scan
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Semgrep
+      uses: semgrep/semgrep-action@v1
+      with:
+        config: >-
+          p/security-audit
+          p/secrets
+          p/rust
+        generateSarif: "1"
+
+    - name: Upload SARIF file
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: semgrep.sarif
+      if: always()
+
+  codeql:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: rust
+        queries: security-and-quality
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Build for CodeQL
+      run: cargo build --all-features
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+      with:
+        category: "/language:rust"
+
+  supply-chain:
+    name: Supply Chain Security
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-vet
+      run: cargo install cargo-vet
+
+    - name: Initialize cargo-vet (if not already)
+      run: |
+        if [ ! -f supply-chain/config.toml ]; then
+          cargo vet init --no-developer
+        fi
+      continue-on-error: true
+
+    - name: Run cargo-vet
+      run: cargo vet --locked
+      continue-on-error: true
+
+  typos:
+    name: Typos and Secrets Check
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Check for typos
+      uses: crate-ci/typos@master
+
+    - name: Run TruffleHog OSS
+      uses: trufflesecurity/trufflehog@main
+      with:
+        path: ./
+        base: main
+        head: HEAD
+        extra_args: --debug --only-verified
+
+  crypto-audit:
+    name: Cryptographic Audit
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Check for weak cryptographic practices
+      run: |
+        echo "🔍 Checking for weak cryptographic patterns..."
+        
+        # Check for hardcoded cryptographic material
+        if grep -r "AAAA\|0000\|1111\|ffff" --include="*.rs" src/ 2>/dev/null; then
+          echo "❌ Found potential hardcoded cryptographic material"
+          exit 1
+        fi
+        
+        # Check for insecure random number generation
+        if grep -r "thread_rng\|StdRng::from_entropy" --include="*.rs" src/ 2>/dev/null; then
+          echo "⚠️ Found potentially insecure RNG usage - verify cryptographic security"
+        fi
+        
+        # Check for deprecated crypto functions
+        if grep -r "md5\|sha1\|des\|3des\|rc4" --include="*.rs" src/ 2>/dev/null; then
+          echo "❌ Found deprecated cryptographic algorithms"
+          exit 1
+        fi
+        
+        # Check for potential timing attack vulnerabilities
+        if grep -r "==\|!=" --include="*.rs" src/ | grep -E "(secret|key|password|token)" 2>/dev/null; then
+          echo "⚠️ Found potential timing attack vulnerability - use constant-time comparison"
+        fi
+        
+        echo "✅ Basic cryptographic audit passed"
+
+  memory-safety:
+    name: Memory Safety Check
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Check for unsafe usage
+      run: |
+        echo "🔍 Checking for unsafe code blocks..."
+        
+        UNSAFE_COUNT=$(grep -r "unsafe" --include="*.rs" src/ | wc -l || echo "0")
+        
+        if [ "$UNSAFE_COUNT" -gt 0 ]; then
+          echo "⚠️ Found $UNSAFE_COUNT unsafe blocks:"
+          grep -r "unsafe" --include="*.rs" src/ || true
+          echo "Please ensure all unsafe blocks are properly justified and reviewed"
+        else
+          echo "✅ No unsafe blocks found"
+        fi
+
+    - name: Check for panic usage in production
+      run: |
+        echo "🔍 Checking for panic/unwrap in production code..."
+        
+        # Check for unwrap, expect, panic in non-test code
+        if find src/ -name "*.rs" -not -path "*/tests/*" -exec grep -l "\.unwrap()\|\.expect(\|panic!\|todo!\|unimplemented!" {} \; | head -5; then
+          echo "❌ Found panic/unwrap in production code"
+          echo "These should be replaced with proper error handling"
+          exit 1
+        else
+          echo "✅ No panic/unwrap found in production code"
+        fi
+
+  fuzz-check:
+    name: Fuzz Testing Setup Check
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust nightly
+      uses: dtolnay/rust-toolchain@nightly
+
+    - name: Install cargo-fuzz
+      run: cargo install cargo-fuzz
+
+    - name: Check if fuzz targets exist
+      run: |
+        if [ -d "fuzz" ]; then
+          echo "✅ Fuzz directory found"
+          cargo fuzz list
+        else
+          echo "⚠️ No fuzz directory found. Consider adding fuzz targets for cryptographic code."
+          echo "Run: cargo fuzz init to set up fuzzing"
+        fi
+
+  audit-summary:
+    name: Security Audit Summary
+    runs-on: ubuntu-latest
+    needs: [cargo-audit, cargo-deny, semgrep, codeql, crypto-audit, memory-safety]
+    if: always()
+    steps:
+    - name: Generate Security Summary
+      run: |
+        echo "# 🔒 Security Audit Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Cargo Audit | ${{ needs.cargo-audit.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Cargo Deny | ${{ needs.cargo-deny.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Semgrep | ${{ needs.semgrep.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| CodeQL | ${{ needs.codeql.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Crypto Audit | ${{ needs.crypto-audit.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Memory Safety | ${{ needs.memory-safety.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Date: $(date)" >> $GITHUB_STEP_SUMMARY

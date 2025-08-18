@@ -1,0 +1,37 @@
+[default]
+# Extend identifiers to check
+extend-identifiers = true
+
+# Check file names
+check-filenames = true
+
+# Check hidden files
+hidden = false
+
+[default.extend-words]
+# Add project-specific words that should not be flagged as typos
+MLS = "MLS"
+Saorsa = "Saorsa"
+pqc = "pqc"
+HKDF = "HKDF"
+HMAC = "HMAC"
+AEAD = "AEAD"
+DSA = "DSA"
+KEM = "KEM"
+PQC = "PQC"
+dirvine = "dirvine"
+
+[files]
+# Ignore certain file types
+extend-exclude = [
+    "*.lock",
+    "*.svg",
+    "*.png",
+    "*.jpg",
+    "*.jpeg",
+    "*.gif",
+    "target/",
+    ".git/",
+    "*.toml",
+    "*.json"
+]

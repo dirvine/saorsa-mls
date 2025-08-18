@@ -1,0 +1,101 @@
+version: 2
+updates:
+  # Rust dependencies
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "04:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "dirvine"
+    assignees:
+      - "dirvine"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "rust"
+      - "automated"
+    allow:
+      # Allow version updates for direct dependencies
+      - dependency-type: "direct"
+      - dependency-type: "indirect"
+    ignore:
+      # Ignore major version updates for critical dependencies
+      - dependency-name: "tokio"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "serde"
+        update-types: ["version-update:semver-major"]
+    groups:
+      # Group crypto-related updates
+      crypto-dependencies:
+        patterns:
+          - "saorsa-pqc"
+          - "chacha20poly1305"
+          - "subtle"
+          - "zeroize*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group tokio ecosystem updates
+      tokio-ecosystem:
+        patterns:
+          - "tokio*"
+          - "async-trait"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group serde ecosystem updates
+      serde-ecosystem:
+        patterns:
+          - "serde*"
+          - "bincode"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group development dependencies
+      dev-dependencies:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions dependencies
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "04:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "dirvine"
+    assignees:
+      - "dirvine"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+      - "automated"
+    groups:
+      # Group action updates by vendor
+      actions-vendor:
+        patterns:
+          - "actions/*"
+        update-types:
+          - "minor"
+          - "patch"
+      rust-actions:
+        patterns:
+          - "dtolnay/*"
+          - "taiki-e/*"
+        update-types:
+          - "minor"
+          - "patch"

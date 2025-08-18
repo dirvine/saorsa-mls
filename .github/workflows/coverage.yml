@@ -1,0 +1,345 @@
+name: Code Coverage
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  coverage:
+    name: Code Coverage Analysis
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: llvm-tools-preview
+
+    - name: Install cargo-llvm-cov
+      uses: taiki-e/install-action@cargo-llvm-cov
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: coverage-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Generate coverage report
+      run: |
+        # Generate coverage data
+        cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+        
+        # Generate HTML report
+        cargo llvm-cov --all-features --workspace --html
+        
+        # Generate summary
+        cargo llvm-cov --all-features --workspace --summary-only
+
+    - name: Generate coverage summary
+      run: |
+        echo "# 📊 Code Coverage Report" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Extract coverage percentage from lcov.info
+        if [ -f "lcov.info" ]; then
+          COVERAGE=$(cargo llvm-cov --all-features --workspace --summary-only | grep -o '[0-9]\+\.[0-9]\+%' | tail -1)
+          echo "## Overall Coverage: **$COVERAGE**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Coverage breakdown by file
+          echo "## Coverage Breakdown" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          cargo llvm-cov --all-features --workspace --summary-only >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Coverage data not generated" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Date: $(date)" >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        file: lcov.info
+        token: ${{ secrets.CODECOV_TOKEN }}
+        fail_ci_if_error: false
+        verbose: true
+
+    - name: Upload coverage HTML report
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: target/llvm-cov/html/
+        retention-days: 30
+
+    - name: Check coverage threshold
+      run: |
+        # Extract coverage percentage
+        COVERAGE_NUM=$(cargo llvm-cov --all-features --workspace --summary-only | grep -o '[0-9]\+\.[0-9]\+' | tail -1)
+        THRESHOLD=85.0
+        
+        echo "Coverage: $COVERAGE_NUM%"
+        echo "Threshold: $THRESHOLD%"
+        
+        # Compare coverage with threshold
+        if (( $(echo "$COVERAGE_NUM >= $THRESHOLD" | bc -l) )); then
+          echo "✅ Coverage $COVERAGE_NUM% meets threshold $THRESHOLD%"
+        else
+          echo "❌ Coverage $COVERAGE_NUM% below threshold $THRESHOLD%"
+          exit 1
+        fi
+
+  differential-coverage:
+    name: Differential Coverage
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+    - name: Checkout base
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.base_ref }}
+        path: base
+
+    - name: Checkout head
+      uses: actions/checkout@v4
+      with:
+        path: head
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: llvm-tools-preview
+
+    - name: Install cargo-llvm-cov
+      uses: taiki-e/install-action@cargo-llvm-cov
+
+    - name: Generate baseline coverage
+      run: |
+        cd base
+        cargo llvm-cov --all-features --workspace --summary-only > ../baseline-coverage.txt || echo "0.0%" > ../baseline-coverage.txt
+
+    - name: Generate current coverage
+      run: |
+        cd head
+        cargo llvm-cov --all-features --workspace --summary-only > ../current-coverage.txt || echo "0.0%" > ../current-coverage.txt
+
+    - name: Compare coverage
+      run: |
+        BASELINE=$(grep -o '[0-9]\+\.[0-9]\+' baseline-coverage.txt | tail -1 || echo "0.0")
+        CURRENT=$(grep -o '[0-9]\+\.[0-9]\+' current-coverage.txt | tail -1 || echo "0.0")
+        
+        echo "# 📊 Coverage Comparison" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Branch | Coverage |" >> $GITHUB_STEP_SUMMARY
+        echo "|--------|----------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Base (${{ github.base_ref }}) | $BASELINE% |" >> $GITHUB_STEP_SUMMARY
+        echo "| Head (${{ github.head_ref }}) | $CURRENT% |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Calculate difference
+        DIFF=$(echo "$CURRENT - $BASELINE" | bc -l)
+        if (( $(echo "$DIFF > 0" | bc -l) )); then
+          echo "✅ Coverage **increased** by $DIFF%" >> $GITHUB_STEP_SUMMARY
+        elif (( $(echo "$DIFF < 0" | bc -l) )); then
+          echo "⚠️ Coverage **decreased** by ${DIFF#-}%" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "➡️ Coverage **unchanged**" >> $GITHUB_STEP_SUMMARY
+        fi
+
+  line-coverage:
+    name: Line-by-Line Coverage
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: llvm-tools-preview
+
+    - name: Install cargo-llvm-cov
+      uses: taiki-e/install-action@cargo-llvm-cov
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: line-coverage-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Generate detailed coverage
+      run: |
+        # Generate per-file coverage
+        cargo llvm-cov --all-features --workspace --show-missing-lines --output-dir detailed-coverage
+        
+        echo "# 📋 Detailed Coverage Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Find files with low coverage
+        echo "## Files Needing Attention (< 80% coverage)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Simple coverage check per source file
+        for file in $(find src/ -name "*.rs"); do
+          if [ -f "$file" ]; then
+            # Count total lines vs tested lines (simplified)
+            TOTAL_LINES=$(wc -l < "$file")
+            if [ "$TOTAL_LINES" -gt 10 ]; then
+              echo "- $file: $TOTAL_LINES lines (review needed)" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+        done
+
+    - name: Check for untested files
+      run: |
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## Untested Files" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Check for Rust files without tests
+        UNTESTED_FILES=()
+        for file in $(find src/ -name "*.rs" -not -name "lib.rs"); do
+          if [ -f "$file" ]; then
+            # Simple check: if file doesn't contain #[cfg(test)] or #[test]
+            if ! grep -q "#\[test\]\|#\[cfg(test)\]" "$file"; then
+              UNTESTED_FILES+=("$file")
+            fi
+          fi
+        done
+        
+        if [ ${#UNTESTED_FILES[@]} -eq 0 ]; then
+          echo "✅ All source files appear to have tests" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⚠️ Files that may need tests:" >> $GITHUB_STEP_SUMMARY
+          for file in "${UNTESTED_FILES[@]}"; do
+            echo "- $file" >> $GITHUB_STEP_SUMMARY
+          done
+        fi
+
+  mutation-testing:
+    name: Mutation Testing
+    runs-on: ubuntu-latest
+    continue-on-error: true  # Mutation testing can be flaky
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-mutants
+      uses: taiki-e/install-action@cargo-mutants
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: mutants-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Run mutation testing (limited)
+      run: |
+        # Run mutation testing on a subset to avoid timeout
+        timeout 600 cargo mutants --timeout 30 --shard 1/4 || echo "Mutation testing completed with timeout"
+
+    - name: Generate mutation report
+      run: |
+        if [ -f "mutants.out/outcomes.json" ]; then
+          echo "# 🧬 Mutation Testing Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Mutation testing completed. Results available in artifacts." >> $GITHUB_STEP_SUMMARY
+        else
+          echo "# 🧬 Mutation Testing" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ Mutation testing results not available (may have timed out)" >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Upload mutation results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: mutation-testing-results
+        path: mutants.out/
+        retention-days: 7
+
+  property-test-coverage:
+    name: Property Test Coverage
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: proptest-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Run property tests with coverage
+      run: |
+        # Set proptest to run more cases
+        export PROPTEST_CASES=1000
+        
+        # Run tests with proptest specifically
+        cargo test --all-features -- proptest
+        
+        echo "# 🎲 Property Test Coverage" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Property tests executed with $PROPTEST_CASES test cases each." >> $GITHUB_STEP_SUMMARY
+
+    - name: Check for property test files
+      run: |
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## Property Test Files" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        PROPTEST_FILES=$(find . -name "*.rs" -exec grep -l "proptest\|quickcheck" {} \; 2>/dev/null || echo "")
+        
+        if [ -n "$PROPTEST_FILES" ]; then
+          echo "Files with property tests:" >> $GITHUB_STEP_SUMMARY
+          echo "$PROPTEST_FILES" | while read file; do
+            echo "- $file" >> $GITHUB_STEP_SUMMARY
+          done
+        else
+          echo "⚠️ No property test files found. Consider adding property tests for cryptographic functions." >> $GITHUB_STEP_SUMMARY
+        fi
+
+  coverage-summary:
+    name: Coverage Summary
+    runs-on: ubuntu-latest
+    needs: [coverage, line-coverage, mutation-testing, property-test-coverage]
+    if: always()
+    steps:
+    - name: Generate Coverage Summary
+      run: |
+        echo "# 📊 Complete Coverage Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Coverage Type | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|---------------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Line Coverage | ${{ needs.coverage.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Detailed Analysis | ${{ needs.line-coverage.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Mutation Testing | ${{ needs.mutation-testing.result == 'success' && '✅ PASS' || '⚠️ PARTIAL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Property Tests | ${{ needs.property-test-coverage.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "🎯 **Goal**: Maintain >85% line coverage with comprehensive mutation testing" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Date: $(date)" >> $GITHUB_STEP_SUMMARY

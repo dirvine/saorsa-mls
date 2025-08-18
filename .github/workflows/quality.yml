@@ -1,0 +1,319 @@
+name: Code Quality
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  formatting:
+    name: Code Formatting
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt
+
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+
+    - name: Generate formatting diff on failure
+      if: failure()
+      run: |
+        echo "# ❌ Formatting Issues Found" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "The following files have formatting issues:" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`diff" >> $GITHUB_STEP_SUMMARY
+        cargo fmt --all -- --check || true
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Run \`cargo fmt\` to fix these issues." >> $GITHUB_STEP_SUMMARY
+
+  clippy:
+    name: Clippy Linting
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: clippy-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Run Clippy (all features)
+      run: cargo clippy --all-targets --all-features -- -D warnings
+
+    - name: Run Clippy (no features)
+      run: cargo clippy --all-targets --no-default-features -- -D warnings
+
+    - name: Run Clippy (pedantic)
+      run: cargo clippy --all-targets --all-features -- -W clippy::pedantic
+
+    - name: Run Clippy (nursery - advisory)
+      run: cargo clippy --all-targets --all-features -- -W clippy::nursery
+      continue-on-error: true
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: docs-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Check documentation
+      run: cargo doc --all-features --no-deps
+      env:
+        RUSTDOCFLAGS: -D warnings
+
+    - name: Check for missing documentation
+      run: cargo doc --all-features --no-deps
+      env:
+        RUSTDOCFLAGS: -D missing_docs -D warnings
+
+    - name: Test documentation examples
+      run: cargo test --doc --all-features
+
+    - name: Build documentation with private items
+      run: cargo doc --all-features --no-deps --document-private-items
+
+    - name: Upload documentation
+      uses: actions/upload-artifact@v4
+      with:
+        name: documentation
+        path: target/doc/
+        retention-days: 7
+
+  spelling:
+    name: Spelling and Grammar
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Check spelling
+      uses: crate-ci/typos@master
+      with:
+        config: .typos.toml
+
+    - name: Check for common errors
+      run: |
+        echo "🔍 Checking for common errors..."
+        
+        # Check for TODO/FIXME/XXX comments
+        if grep -r "TODO\|FIXME\|XXX\|HACK" --include="*.rs" --include="*.md" . 2>/dev/null; then
+          echo "⚠️ Found TODO/FIXME comments. Consider creating issues for these."
+        fi
+        
+        # Check for debug prints
+        if grep -r "println!\|eprintln!\|dbg!" --include="*.rs" src/ 2>/dev/null; then
+          echo "❌ Found debug print statements in source code"
+          exit 1
+        fi
+        
+        # Check for unwrap/expect in non-test code
+        if find src/ -name "*.rs" -not -path "*/tests/*" -exec grep -l "\.unwrap()\|\.expect(" {} \; 2>/dev/null | head -1; then
+          echo "❌ Found unwrap/expect in non-test code"
+          exit 1
+        fi
+        
+        echo "✅ Common error checks passed"
+
+  complexity:
+    name: Code Complexity Analysis
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install complexity tools
+      run: |
+        cargo install tokei
+        cargo install scc
+
+    - name: Analyze code metrics
+      run: |
+        echo "# 📊 Code Metrics Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "## Lines of Code (tokei)" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        tokei --output compact >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "## Detailed Metrics (scc)" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        scc --ci >> $GITHUB_STEP_SUMMARY || true
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+    - name: Check function complexity
+      run: |
+        # Simple complexity check - count lines per function
+        echo "🔍 Checking function complexity..."
+        
+        for file in $(find src/ -name "*.rs"); do
+          if [ -f "$file" ]; then
+            # Count lines in functions (basic heuristic)
+            awk '/^[[:space:]]*fn / { start=NR } /^[[:space:]]*}/ && start { 
+              lines=NR-start+1; 
+              if(lines > 50) print FILENAME":"start": Function at line "start" has "lines" lines (consider refactoring)" 
+              start=0 
+            }' "$file"
+          fi
+        done || echo "✅ No overly complex functions found"
+
+  dead-code:
+    name: Dead Code Detection
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust nightly
+      uses: dtolnay/rust-toolchain@nightly
+
+    - name: Install cargo-udeps
+      uses: taiki-e/install-action@cargo-udeps
+
+    - name: Check for unused dependencies
+      run: cargo +nightly udeps --all-targets --all-features
+
+    - name: Check for dead code
+      run: |
+        # Enable dead code warnings
+        cargo build --all-features
+        RUSTFLAGS="-W dead_code" cargo check --all-features 2>&1 | tee dead_code_check.log
+        
+        if grep -q "warning: " dead_code_check.log; then
+          echo "⚠️ Dead code warnings found:"
+          grep "warning: " dead_code_check.log
+        else
+          echo "✅ No dead code found"
+        fi
+
+  duplicate-code:
+    name: Duplicate Code Detection
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install PMD for duplicate detection
+      run: |
+        wget https://github.com/pmd/pmd/releases/download/pmd_releases%2F6.55.0/pmd-bin-6.55.0.zip
+        unzip pmd-bin-6.55.0.zip
+        chmod +x pmd-bin-6.55.0/bin/run.sh
+
+    - name: Check for code duplication
+      run: |
+        echo "🔍 Checking for code duplication..."
+        
+        # Simple duplicate detection using similarity
+        for file1 in $(find src/ -name "*.rs"); do
+          for file2 in $(find src/ -name "*.rs"); do
+            if [ "$file1" != "$file2" ]; then
+              # Basic similarity check (could be enhanced)
+              similarity=$(diff -u "$file1" "$file2" 2>/dev/null | wc -l || echo "0")
+              if [ "$similarity" -lt 10 ] && [ "$similarity" -gt 0 ]; then
+                echo "⚠️ Potential duplicate code between $file1 and $file2"
+              fi
+            fi
+          done
+        done || echo "✅ No obvious code duplication found"
+
+  api-breaking-changes:
+    name: API Breaking Changes Detection
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+    - name: Checkout base
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.base_ref }}
+        path: base
+
+    - name: Checkout head
+      uses: actions/checkout@v4
+      with:
+        path: head
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-public-api
+      uses: taiki-e/install-action@cargo-public-api
+
+    - name: Check for API breaking changes
+      run: |
+        cd base
+        cargo public-api --simplified > ../base-api.txt
+        cd ../head
+        cargo public-api --simplified > ../head-api.txt
+        cd ..
+        
+        if ! diff -u base-api.txt head-api.txt > api-diff.txt; then
+          echo "# ⚠️ API Changes Detected" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`diff" >> $GITHUB_STEP_SUMMARY
+          cat api-diff.txt >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Please review these API changes carefully!" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "✅ No API changes detected" >> $GITHUB_STEP_SUMMARY
+        fi
+
+  quality-summary:
+    name: Quality Summary
+    runs-on: ubuntu-latest
+    needs: [formatting, clippy, docs, spelling, complexity, dead-code, duplicate-code]
+    if: always()
+    steps:
+    - name: Generate Quality Summary
+      run: |
+        echo "# 📊 Code Quality Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Formatting | ${{ needs.formatting.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Clippy | ${{ needs.clippy.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Documentation | ${{ needs.docs.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Spelling | ${{ needs.spelling.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Complexity | ${{ needs.complexity.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Dead Code | ${{ needs.dead-code.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Duplication | ${{ needs.duplicate-code.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Date: $(date)" >> $GITHUB_STEP_SUMMARY

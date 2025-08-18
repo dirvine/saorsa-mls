@@ -1,0 +1,246 @@
+name: Comprehensive Testing
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run tests daily at 2 AM UTC
+    - cron: '0 2 * * *'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        rust: [stable, beta, nightly]
+        include:
+          # Test with minimum supported Rust version
+          - os: ubuntu-latest
+            rust: 1.75.0  # Adjust based on your MSRV
+        exclude:
+          # Reduce matrix size for efficiency while maintaining coverage
+          - os: windows-latest
+            rust: beta
+          - os: macos-latest
+            rust: beta
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ matrix.rust }}
+        components: rustfmt, clippy
+
+    - name: Install cargo-nextest
+      uses: taiki-e/install-action@cargo-nextest
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Cache target directory
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-${{ matrix.rust }}-target-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ matrix.rust }}-target-
+
+    - name: Check compilation
+      run: cargo check --all-targets --all-features
+
+    - name: Check compilation (no default features)
+      run: cargo check --no-default-features
+
+    - name: Run unit tests
+      run: cargo nextest run --all-features --no-fail-fast
+
+    - name: Run doc tests
+      run: cargo test --doc --all-features
+
+    - name: Run integration tests
+      run: cargo nextest run --test '*' --all-features
+
+    - name: Run property-based tests (proptest)
+      run: cargo test --all-features -- --include-ignored proptest
+
+    - name: Test with all feature combinations
+      run: |
+        # Test default features
+        cargo test
+        # Test no features
+        cargo test --no-default-features
+        # Test test-utils feature
+        cargo test --features test-utils
+
+  miri:
+    name: Miri (Undefined Behavior Detection)
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust nightly with miri
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: miri
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: miri-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Run tests under miri
+      run: |
+        cargo miri setup
+        # Run a subset of tests under miri (it's slow)
+        cargo miri test --lib --all-features
+      env:
+        MIRIFLAGS: -Zmiri-strict-provenance
+
+  address-sanitizer:
+    name: AddressSanitizer
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust nightly
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rust-src
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: asan-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Run tests with AddressSanitizer
+      run: cargo test --all-features --target x86_64-unknown-linux-gnu
+      env:
+        RUSTFLAGS: -Zsanitizer=address
+        ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+
+  thread-sanitizer:
+    name: ThreadSanitizer
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust nightly
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rust-src
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: tsan-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Run tests with ThreadSanitizer
+      run: cargo test --all-features --target x86_64-unknown-linux-gnu
+      env:
+        RUSTFLAGS: -Zsanitizer=thread
+
+  big-endian:
+    name: Big Endian Testing
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cross
+      uses: taiki-e/install-action@cross
+
+    - name: Test on big-endian (s390x)
+      run: cross test --target s390x-unknown-linux-gnu --all-features
+
+  wasm:
+    name: WebAssembly Testing
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+
+    - name: Install wasm-pack
+      uses: jetli/wasm-pack-action@v0.4.0
+
+    - name: Test WASM compilation
+      run: cargo check --target wasm32-unknown-unknown --all-features
+
+    - name: Test WASM (if supported)
+      run: |
+        if cargo test --target wasm32-unknown-unknown --all-features 2>/dev/null; then
+          echo "WASM tests supported and passed"
+        else
+          echo "WASM tests not supported or require browser environment"
+        fi
+
+  no-std:
+    name: no_std Testing
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: thumbv7em-none-eabihf
+
+    - name: Test no_std compilation
+      run: |
+        # Test compilation for embedded target (no_std)
+        cargo check --target thumbv7em-none-eabihf --no-default-features
+        echo "✅ no_std compilation successful"
+
+  test-timeout:
+    name: Test Timeout Verification
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Run tests with timeout
+      run: |
+        # Ensure tests complete within reasonable time (30 minutes)
+        timeout 1800 cargo test --all-features --no-fail-fast

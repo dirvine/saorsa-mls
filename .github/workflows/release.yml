@@ -1,0 +1,404 @@
+name: Release Automation
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.2.3)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run (no actual release)'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  prepare-release:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+      changelog: ${{ steps.changelog.outputs.content }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Extract version
+      id: extract
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+        else
+          VERSION="${GITHUB_REF#refs/tags/}"
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Version: $VERSION"
+
+    - name: Validate version format
+      run: |
+        VERSION="${{ steps.extract.outputs.version }}"
+        if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?$ ]]; then
+          echo "❌ Invalid version format: $VERSION"
+          echo "Expected format: v1.2.3 or v1.2.3-alpha"
+          exit 1
+        fi
+        echo "✅ Version format valid: $VERSION"
+
+    - name: Extract changelog
+      id: changelog
+      run: |
+        VERSION="${{ steps.extract.outputs.version }}"
+        # Extract changelog for this version
+        if [ -f "CHANGELOG.md" ]; then
+          # Extract content between version headers
+          CHANGELOG=$(awk "/^## \[?${VERSION#v}\]?/ { flag=1; next } /^## \[?[0-9]/ && flag { exit } flag" CHANGELOG.md || echo "No changelog entry found")
+          if [ -n "$CHANGELOG" ] && [ "$CHANGELOG" != "No changelog entry found" ]; then
+            echo "content<<EOF" >> $GITHUB_OUTPUT
+            echo "$CHANGELOG" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ No changelog entry found for $VERSION"
+            echo "content=No changelog entry available for this release." >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "⚠️ CHANGELOG.md not found"
+          echo "content=No changelog available." >> $GITHUB_OUTPUT
+        fi
+
+  validate-release:
+    name: Validate Release
+    runs-on: ubuntu-latest
+    needs: prepare-release
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: release-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Validate Cargo.toml version
+      run: |
+        VERSION="${{ needs.prepare-release.outputs.version }}"
+        CARGO_VERSION=$(grep "^version = " Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+        
+        if [ "${VERSION#v}" != "$CARGO_VERSION" ]; then
+          echo "❌ Version mismatch:"
+          echo "  Tag version: ${VERSION#v}"
+          echo "  Cargo.toml version: $CARGO_VERSION"
+          exit 1
+        fi
+        echo "✅ Version consistency validated"
+
+    - name: Run full test suite
+      run: |
+        echo "🧪 Running comprehensive test suite..."
+        cargo test --all-features --no-fail-fast
+        
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+
+    - name: Run Clippy
+      run: cargo clippy --all-targets --all-features -- -D warnings
+
+    - name: Build release binary
+      run: cargo build --release --all-features
+
+    - name: Run security audit
+      run: |
+        cargo install cargo-audit
+        cargo audit
+
+    - name: Validate documentation
+      run: |
+        cargo doc --all-features --no-deps
+        # Check for broken doc links
+        cargo doc --all-features --no-deps 2>&1 | grep -i "warning\|error" && exit 1 || echo "✅ Documentation valid"
+
+  build-artifacts:
+    name: Build Release Artifacts
+    runs-on: ${{ matrix.os }}
+    needs: [prepare-release, validate-release]
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            name: linux-x86_64-musl
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x86_64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macos-aarch64
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Install cross-compilation tools (Linux)
+      if: matrix.os == 'ubuntu-latest' && matrix.target == 'x86_64-unknown-linux-musl'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y musl-tools
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ matrix.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Build release
+      run: |
+        cargo build --release --target ${{ matrix.target }} --all-features
+
+    - name: Create artifact directory
+      run: mkdir -p artifacts
+
+    - name: Package artifacts (Unix)
+      if: matrix.os != 'windows-latest'
+      run: |
+        cd target/${{ matrix.target }}/release
+        tar czf ../../../artifacts/saorsa-mls-${{ needs.prepare-release.outputs.version }}-${{ matrix.name }}.tar.gz saorsa-mls
+        cd ../../..
+
+    - name: Package artifacts (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        cd target/${{ matrix.target }}/release
+        7z a ../../../artifacts/saorsa-mls-${{ needs.prepare-release.outputs.version }}-${{ matrix.name }}.zip saorsa-mls.exe
+        cd ../../..
+
+    - name: Generate checksums
+      run: |
+        cd artifacts
+        if [ "${{ matrix.os }}" = "windows-latest" ]; then
+          certutil -hashfile saorsa-mls-${{ needs.prepare-release.outputs.version }}-${{ matrix.name }}.zip SHA256 > saorsa-mls-${{ needs.prepare-release.outputs.version }}-${{ matrix.name }}.zip.sha256
+        else
+          sha256sum saorsa-mls-${{ needs.prepare-release.outputs.version }}-${{ matrix.name }}.tar.gz > saorsa-mls-${{ needs.prepare-release.outputs.version }}-${{ matrix.name }}.tar.gz.sha256
+        fi
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-${{ matrix.name }}
+        path: artifacts/
+        retention-days: 7
+
+  publish-crates-io:
+    name: Publish to Crates.io
+    runs-on: ubuntu-latest
+    needs: [prepare-release, validate-release, build-artifacts]
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !github.event.inputs.dry_run)
+    environment: production
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: publish-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Login to crates.io
+      run: cargo login ${{ secrets.CRATES_IO_TOKEN }}
+
+    - name: Dry run publish
+      run: cargo publish --dry-run --all-features
+
+    - name: Publish to crates.io
+      run: cargo publish --all-features
+
+    - name: Verify publication
+      run: |
+        sleep 30  # Wait for crates.io to update
+        cargo search saorsa-mls | head -5
+
+  create-github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [prepare-release, validate-release, build-artifacts, publish-crates-io]
+    if: always() && (needs.validate-release.result == 'success' && needs.build-artifacts.result == 'success')
+    permissions:
+      contents: write
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: all-artifacts
+
+    - name: Prepare release assets
+      run: |
+        mkdir -p release-assets
+        find all-artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.sha256" \) -exec cp {} release-assets/ \;
+        ls -la release-assets/
+
+    - name: Create release notes
+      run: |
+        cat > release-notes.md << 'EOF'
+        # Release ${{ needs.prepare-release.outputs.version }}
+        
+        ## What's Changed
+        
+        ${{ needs.prepare-release.outputs.changelog }}
+        
+        ## Installation
+        
+        ### From Crates.io
+        ```bash
+        cargo install saorsa-mls
+        ```
+        
+        ### From GitHub Releases
+        Download the appropriate binary for your platform from the assets below.
+        
+        ## Verification
+        
+        All release artifacts include SHA256 checksums for verification:
+        ```bash
+        sha256sum -c saorsa-mls-${{ needs.prepare-release.outputs.version }}-<platform>.tar.gz.sha256
+        ```
+        
+        ## Documentation
+        
+        - [API Documentation](https://docs.rs/saorsa-mls)
+        - [Repository](https://github.com/dirvine/saorsa-mls)
+        
+        ---
+        
+        **Full Changelog**: https://github.com/dirvine/saorsa-mls/compare/v${{ needs.prepare-release.outputs.version }}...HEAD
+        EOF
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ needs.prepare-release.outputs.version }}
+        name: ${{ needs.prepare-release.outputs.version }}
+        body_path: release-notes.md
+        files: release-assets/*
+        draft: false
+        prerelease: ${{ contains(needs.prepare-release.outputs.version, '-') }}
+        generate_release_notes: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  post-release:
+    name: Post-Release Tasks
+    runs-on: ubuntu-latest
+    needs: [prepare-release, create-github-release]
+    if: always() && needs.create-github-release.result == 'success'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Update version for next development cycle
+      run: |
+        VERSION="${{ needs.prepare-release.outputs.version }}"
+        CURRENT_VERSION="${VERSION#v}"
+        
+        # Increment patch version for next dev cycle
+        IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+        NEXT_PATCH=$((PATCH + 1))
+        NEXT_VERSION="$MAJOR.$MINOR.$NEXT_PATCH"
+        
+        echo "Updating version to $NEXT_VERSION for next development cycle"
+        
+        # Update Cargo.toml
+        sed -i "s/^version = \".*\"/version = \"$NEXT_VERSION\"/" Cargo.toml
+        
+        # Update Cargo.lock
+        cargo check
+        
+        echo "✅ Version updated to $NEXT_VERSION"
+
+    - name: Create version bump commit
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add Cargo.toml Cargo.lock
+        git commit -m "chore: bump version for next development cycle" || echo "No changes to commit"
+        git push origin main || echo "No changes to push"
+
+    - name: Notify successful release
+      run: |
+        echo "# 🚀 Release ${{ needs.prepare-release.outputs.version }} Complete!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## Release Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ **Version**: ${{ needs.prepare-release.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ **Crates.io**: Published successfully" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ **GitHub Release**: Created with artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ **Artifacts**: Cross-platform binaries available" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## Next Steps" >> $GITHUB_STEP_SUMMARY
+        echo "- Monitor for any post-release issues" >> $GITHUB_STEP_SUMMARY
+        echo "- Update documentation if needed" >> $GITHUB_STEP_SUMMARY
+        echo "- Consider announcing the release" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Date: $(date)" >> $GITHUB_STEP_SUMMARY
+
+  release-summary:
+    name: Release Summary
+    runs-on: ubuntu-latest
+    needs: [prepare-release, validate-release, build-artifacts, publish-crates-io, create-github-release, post-release]
+    if: always()
+    steps:
+    - name: Generate Release Summary
+      run: |
+        echo "# 📦 Release Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Preparation | ${{ needs.prepare-release.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Validation | ${{ needs.validate-release.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Build Artifacts | ${{ needs.build-artifacts.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Crates.io Publish | ${{ needs.publish-crates-io.result == 'success' && '✅ PASS' || (needs.publish-crates-io.result == 'skipped' && '⏭️ SKIP' || '❌ FAIL') }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| GitHub Release | ${{ needs.create-github-release.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Post-Release | ${{ needs.post-release.result == 'success' && '✅ PASS' || (needs.post-release.result == 'skipped' && '⏭️ SKIP' || '❌ FAIL') }} |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Version: **${{ needs.prepare-release.outputs.version }}**" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Date: $(date)" >> $GITHUB_STEP_SUMMARY

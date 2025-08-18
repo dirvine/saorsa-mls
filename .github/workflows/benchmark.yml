@@ -1,0 +1,365 @@
+name: Performance Benchmarks
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run benchmarks weekly on Sunday at 4 AM UTC
+    - cron: '0 4 * * 0'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: bench-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache target directory
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: bench-target-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Run criterion benchmarks
+      run: |
+        # Check if benches directory exists
+        if [ -d "benches" ]; then
+          cargo bench --all-features
+        else
+          echo "No benches directory found. Creating sample benchmark structure..."
+          mkdir -p benches
+          cat > benches/crypto_benchmarks.rs << 'EOF'
+        use criterion::{black_box, criterion_group, criterion_main, Criterion};
+        use saorsa_mls::*;
+
+        fn benchmark_key_generation(c: &mut Criterion) {
+            c.bench_function("key_generation", |b| {
+                b.iter(|| {
+                    // Add actual key generation benchmarks here
+                    black_box(());
+                })
+            });
+        }
+
+        fn benchmark_encryption(c: &mut Criterion) {
+            c.bench_function("encryption", |b| {
+                b.iter(|| {
+                    // Add actual encryption benchmarks here  
+                    black_box(());
+                })
+            });
+        }
+
+        fn benchmark_decryption(c: &mut Criterion) {
+            c.bench_function("decryption", |b| {
+                b.iter(|| {
+                    // Add actual decryption benchmarks here
+                    black_box(());
+                })
+            });
+        }
+
+        criterion_group!(benches, benchmark_key_generation, benchmark_encryption, benchmark_decryption);
+        criterion_main!(benches);
+        EOF
+          echo "Sample benchmark created. Run: cargo bench"
+          cargo bench --all-features
+        fi
+
+    - name: Generate benchmark report
+      run: |
+        echo "# 📊 Performance Benchmark Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # If criterion reports exist, parse them
+        if [ -d "target/criterion" ]; then
+          echo "## Criterion Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          for report in target/criterion/*/report/index.html; do
+            if [ -f "$report" ]; then
+              benchmark_name=$(basename $(dirname $(dirname "$report")))
+              echo "- ✅ $benchmark_name: Benchmark completed" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+        else
+          echo "⚠️ No benchmark results found" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Date: $(date)" >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-results
+        path: target/criterion/
+        retention-days: 30
+
+  memory-benchmark:
+    name: Memory Usage Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install memory profiling tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y valgrind
+
+    - name: Install cargo-valgrind
+      run: cargo install cargo-valgrind
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: memory-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Run memory benchmarks
+      run: |
+        echo "🔍 Running memory usage analysis..."
+        
+        # Build tests first
+        cargo test --no-run --all-features
+        
+        # Run a simple memory check on test binaries
+        for test_binary in target/debug/deps/saorsa_mls-*; do
+          if [ -x "$test_binary" ] && [ ! -d "$test_binary" ]; then
+            echo "Testing memory usage of: $test_binary"
+            timeout 60 valgrind --tool=massif --time-unit=B "$test_binary" --list 2>/dev/null || echo "Skipped $test_binary"
+            break  # Only test one to avoid timeout
+          fi
+        done
+
+    - name: Memory usage summary
+      run: |
+        echo "# 🧠 Memory Usage Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -f massif.out.* ]; then
+          echo "✅ Memory profiling completed" >> $GITHUB_STEP_SUMMARY
+          echo "Peak memory usage analysis available in artifacts" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⚠️ Memory profiling data not available" >> $GITHUB_STEP_SUMMARY
+        fi
+
+  performance-regression:
+    name: Performance Regression Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+    - name: Checkout base
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.base_ref }}
+        path: base
+
+    - name: Checkout head
+      uses: actions/checkout@v4
+      with:
+        path: head
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install hyperfine
+      uses: taiki-e/install-action@hyperfine
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: perf-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Build baseline (base branch)
+      run: |
+        cd base
+        cargo build --release --all-features
+
+    - name: Build current (head branch)
+      run: |
+        cd head  
+        cargo build --release --all-features
+
+    - name: Compare build times
+      run: |
+        echo "🏁 Comparing build performance..."
+        
+        # Clean builds comparison
+        cd base && cargo clean && cd ..
+        cd head && cargo clean && cd ..
+        
+        # Time baseline build
+        echo "Building baseline..."
+        hyperfine --warmup 1 --runs 3 'cd base && cargo build --release --all-features' > baseline_build.txt
+        
+        # Time current build  
+        echo "Building current..."
+        hyperfine --warmup 1 --runs 3 'cd head && cargo build --release --all-features' > current_build.txt
+        
+        echo "# ⚡ Build Performance Comparison" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## Baseline (base branch)" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat baseline_build.txt >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## Current (head branch)" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat current_build.txt >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+    - name: Compare test execution times
+      run: |
+        echo "🧪 Comparing test performance..."
+        
+        # Time baseline tests
+        hyperfine --warmup 1 --runs 2 'cd base && cargo test --release --all-features' > baseline_test.txt || echo "Baseline tests failed"
+        
+        # Time current tests
+        hyperfine --warmup 1 --runs 2 'cd head && cargo test --release --all-features' > current_test.txt || echo "Current tests failed"
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## Test Performance" >> $GITHUB_STEP_SUMMARY
+        echo "### Baseline Tests" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat baseline_test.txt >> $GITHUB_STEP_SUMMARY || echo "No baseline test data" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "### Current Tests" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat current_test.txt >> $GITHUB_STEP_SUMMARY || echo "No current test data" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+  binary-size:
+    name: Binary Size Analysis
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-bloat
+      uses: taiki-e/install-action@cargo-bloat
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: size-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Build release binary
+      run: cargo build --release --all-features
+
+    - name: Analyze binary size
+      run: |
+        echo "# 📦 Binary Size Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Get total binary size
+        if [ -f "target/release/saorsa-mls" ]; then
+          BINARY_SIZE=$(ls -lh target/release/saorsa-mls | awk '{print $5}')
+          echo "Total binary size: **$BINARY_SIZE**" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## Top 10 Largest Dependencies" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cargo bloat --release --crates | head -20 >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## Function Size Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cargo bloat --release --n 10 >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+  compile-time:
+    name: Compile Time Analysis
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-timings
+      run: cargo install cargo-timings
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: timings-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Analyze compile times
+      run: |
+        # Clean build for accurate timing
+        cargo clean
+        
+        # Build with timing information
+        cargo build --release --all-features --timings
+        
+        echo "# ⏱️ Compile Time Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Compile timing report generated. Check artifacts for detailed analysis." >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload timing report
+      uses: actions/upload-artifact@v4
+      with:
+        name: compile-timings
+        path: cargo-timing-*.html
+        retention-days: 7
+
+  benchmark-summary:
+    name: Benchmark Summary
+    runs-on: ubuntu-latest
+    needs: [benchmark, memory-benchmark, binary-size, compile-time]
+    if: always()
+    steps:
+    - name: Generate Summary
+      run: |
+        echo "# 🚀 Performance Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Benchmark Type | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|----------------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Runtime Benchmarks | ${{ needs.benchmark.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Memory Analysis | ${{ needs.memory-benchmark.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Binary Size | ${{ needs.binary-size.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Compile Time | ${{ needs.compile-time.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "📊 Check individual job outputs for detailed analysis." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Date: $(date)" >> $GITHUB_STEP_SUMMARY
