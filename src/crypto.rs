@@ -15,7 +15,7 @@ use saorsa_pqc::{
     },
     symmetric::{SymmetricKey, ChaCha20Poly1305Cipher as PqcCipher},
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Deserializer, Serializer};
 use sha2::Sha256;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -100,6 +100,7 @@ impl Hash {
 }
 
 /// Key derivation using HKDF
+#[derive(Debug)]
 pub struct KeySchedule {
     suite: CipherSuite,
 }
@@ -115,6 +116,39 @@ impl KeySchedule {
         let hk = Hkdf::<Sha256>::new(None, secret);
         let mut output = vec![0u8; self.suite.hash_size()];
         hk.expand(&info, &mut output)
+            .map_err(|e| MlsError::CryptoError(format!("HKDF expand error: {}", e)))?;
+        Ok(output)
+    }
+
+    /// Derive multiple keys using HKDF
+    pub fn derive_keys(
+        &self,
+        salt: &[u8],
+        secret: &[u8],
+        labels: &[&str],
+        lengths: &[usize],
+    ) -> Result<Vec<Vec<u8>>> {
+        let mut results = Vec::new();
+        
+        for (label, &length) in labels.iter().zip(lengths.iter()) {
+            let key = self.derive_secret(secret, label, salt)?;
+            results.push(key[..length].to_vec());
+        }
+        
+        Ok(results)
+    }
+
+    /// Derive a single key with specific length
+    pub fn derive_key(
+        &self,
+        salt: &[u8],
+        secret: &[u8],
+        info: &[u8],
+        length: usize,
+    ) -> Result<Vec<u8>> {
+        let hk = Hkdf::<Sha256>::new(Some(salt), secret);
+        let mut output = vec![0u8; length];
+        hk.expand(info, &mut output)
             .map_err(|e| MlsError::CryptoError(format!("HKDF expand error: {}", e)))?;
         Ok(output)
     }
@@ -203,14 +237,15 @@ impl KeyPair {
     /// Perform key encapsulation
     pub fn encapsulate(&self, recipient_public: &MlKemPublicKey) -> Result<(MlKemCiphertext, MlKemSharedSecret)> {
         let ml_kem = MlKem::new(self.suite.ml_kem_variant());
-        ml_kem.encaps(recipient_public)
-            .map_err(|e| MlsError::CryptoError(format!("Encapsulation failed: {:?}", e)))
+        let (shared_secret, ciphertext) = ml_kem.encapsulate(recipient_public)
+            .map_err(|e| MlsError::CryptoError(format!("Encapsulation failed: {:?}", e)))?;
+        Ok((ciphertext, shared_secret))
     }
 
     /// Perform key decapsulation
     pub fn decapsulate(&self, ciphertext: &MlKemCiphertext) -> Result<MlKemSharedSecret> {
         let ml_kem = MlKem::new(self.suite.ml_kem_variant());
-        ml_kem.decaps(&self.kem_secret, ciphertext)
+        ml_kem.decapsulate(&self.kem_secret, ciphertext)
             .map_err(|e| MlsError::CryptoError(format!("Decapsulation failed: {:?}", e)))
     }
 }
@@ -233,8 +268,9 @@ impl AeadCipher {
             )));
         }
         
-        let key = SymmetricKey::from_bytes(&key)
-            .map_err(|e| MlsError::CryptoError(format!("Invalid key: {:?}", e)))?;
+        let key_array: [u8; 32] = key.try_into()
+            .map_err(|_| MlsError::CryptoError("Invalid key size: expected 32 bytes".to_string()))?;
+        let key = SymmetricKey::from_bytes(key_array);
         
         Ok(Self { key, suite })
     }
@@ -251,10 +287,14 @@ impl AeadCipher {
         }
 
         let cipher = PqcCipher::new(&self.key);
-        let (ciphertext, _) = cipher.encrypt_with_nonce(plaintext, nonce, Some(associated_data))
-            .map_err(|_| MlsError::EncryptionFailed)?;
+        let (ciphertext_data, actual_nonce) = cipher.encrypt(plaintext, Some(associated_data))
+            .map_err(|_| MlsError::CryptoError("Encryption failed".to_string()))?;
         
-        Ok(ciphertext)
+        // Use the actual nonce from the cipher instead of our provided nonce
+        let mut result = actual_nonce.to_vec();
+        result.extend_from_slice(&ciphertext_data);
+        
+        Ok(result)
     }
 
     /// Decrypt ciphertext with associated data
@@ -269,8 +309,10 @@ impl AeadCipher {
         }
 
         let cipher = PqcCipher::new(&self.key);
-        let plaintext = cipher.decrypt_with_nonce(ciphertext, nonce, Some(associated_data))
-            .map_err(|_| MlsError::DecryptionFailed)?;
+        let nonce_array: [u8; 12] = nonce.try_into()
+            .map_err(|_| MlsError::CryptoError("Invalid nonce size".to_string()))?;
+        let plaintext = cipher.decrypt(ciphertext, &nonce_array, Some(associated_data))
+            .map_err(|_| MlsError::CryptoError("Decryption failed".to_string()))?;
         
         Ok(plaintext)
     }
@@ -318,7 +360,7 @@ pub mod labels {
 }
 
 /// Secure bytes that are zeroed on drop
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+#[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
 pub struct SecretBytes {
     inner: Vec<u8>,
 }
@@ -378,8 +420,8 @@ mod tests {
         
         // Keys should be different
         assert_ne!(
-            kp1.verifying_key.as_bytes(),
-            kp2.verifying_key.as_bytes()
+            kp1.verifying_key.to_bytes(),
+            kp2.verifying_key.to_bytes()
         );
     }
 
@@ -408,7 +450,7 @@ mod tests {
         let shared_secret2 = kp2.decapsulate(&ciphertext).unwrap();
         
         // Shared secrets should match
-        assert_eq!(shared_secret1.as_bytes(), shared_secret2.as_bytes());
+        assert_eq!(shared_secret1.to_bytes(), shared_secret2.to_bytes());
     }
 
     #[test]
@@ -441,5 +483,244 @@ mod tests {
         assert_eq!(secret.len(), 5);
         assert!(!secret.is_empty());
         // SecretBytes will be zeroed when dropped
+    }
+}
+
+/// Debug wrapper for MlDsaSignature to work around missing Debug impl
+#[derive(Clone)]
+pub struct DebugMlDsaSignature(pub MlDsaSignature);
+
+impl std::fmt::Debug for DebugMlDsaSignature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MlDsaSignature(<{} bytes>)", self.0.to_bytes().len())
+    }
+}
+
+impl PartialEq for DebugMlDsaSignature {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bytes() == other.0.to_bytes()
+    }
+}
+
+impl Eq for DebugMlDsaSignature {}
+
+impl Serialize for DebugMlDsaSignature {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serde_wrappers::serialize_ml_dsa_signature(&self.0, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for DebugMlDsaSignature {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let signature = serde_wrappers::deserialize_ml_dsa_signature(deserializer)?;
+        Ok(DebugMlDsaSignature(signature))
+    }
+}
+
+/// Debug wrapper for MlDsaPublicKey to work around missing Debug impl
+#[derive(Clone)]
+pub struct DebugMlDsaPublicKey(pub MlDsaPublicKey);
+
+impl std::fmt::Debug for DebugMlDsaPublicKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MlDsaPublicKey(<{} bytes>)", self.0.to_bytes().len())
+    }
+}
+
+impl PartialEq for DebugMlDsaPublicKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bytes() == other.0.to_bytes()
+    }
+}
+
+impl Eq for DebugMlDsaPublicKey {}
+
+impl Serialize for DebugMlDsaPublicKey {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serde_wrappers::serialize_ml_dsa_public_key(&self.0, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for DebugMlDsaPublicKey {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let key = serde_wrappers::deserialize_ml_dsa_public_key(deserializer)?;
+        Ok(DebugMlDsaPublicKey(key))
+    }
+}
+
+/// Serde wrappers for saorsa-pqc types
+pub mod serde_wrappers {
+    use super::*;
+
+    /// Serialize MlKemCiphertext
+    pub fn serialize_ml_kem_ciphertext<S>(
+        ciphertext: &MlKemCiphertext,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let bytes = ciphertext.to_bytes();
+        let variant = ciphertext.variant();
+        serializer.serialize_str(&format!("{}:{}", 
+            variant as u8, 
+            hex::encode(&bytes)
+        ))
+    }
+
+    /// Deserialize MlKemCiphertext
+    pub fn deserialize_ml_kem_ciphertext<'de, D>(
+        deserializer: D,
+    ) -> std::result::Result<MlKemCiphertext, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let s = String::deserialize(deserializer)?;
+        let parts: Vec<&str> = s.split(':').collect();
+        if parts.len() != 2 {
+            return Err(D::Error::custom("Invalid MlKemCiphertext format"));
+        }
+        
+        let variant = match parts[0] {
+            "0" => MlKemVariant::MlKem512,
+            "1" => MlKemVariant::MlKem768,
+            "2" => MlKemVariant::MlKem1024,
+            _ => return Err(D::Error::custom("Invalid MlKemVariant")),
+        };
+        
+        let bytes = hex::decode(parts[1])
+            .map_err(|e| D::Error::custom(format!("Hex decode error: {}", e)))?;
+        
+        MlKemCiphertext::from_bytes(variant, &bytes)
+            .map_err(|e| D::Error::custom(format!("MlKemCiphertext decode error: {:?}", e)))
+    }
+
+    /// Serialize MlDsaSignature
+    pub fn serialize_ml_dsa_signature<S>(
+        signature: &MlDsaSignature,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let bytes = signature.to_bytes();
+        serializer.serialize_str(&hex::encode(bytes))
+    }
+
+    /// Deserialize MlDsaSignature
+    pub fn deserialize_ml_dsa_signature<'de, D>(
+        deserializer: D,
+    ) -> std::result::Result<MlDsaSignature, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let s = String::deserialize(deserializer)?;
+        let bytes = hex::decode(&s)
+            .map_err(|e| D::Error::custom(format!("Hex decode error: {}", e)))?;
+        
+        // Create from bytes - we'll use MlDsa65 as default
+        if bytes.len() != 3309 { // ML-DSA-65 signature size
+            return Err(D::Error::custom("Invalid MlDsaSignature size"));
+        }
+        
+        let array: [u8; 3309] = bytes.try_into()
+            .map_err(|_| D::Error::custom("Failed to convert to array"))?;
+        
+        Ok(MlDsaSignature::from_bytes(MlDsaVariant::MlDsa65, &array)
+            .map_err(|e| D::Error::custom(format!("MlDsaSignature decode error: {:?}", e)))?)
+    }
+
+    /// Serialize MlDsaPublicKey
+    pub fn serialize_ml_dsa_public_key<S>(
+        key: &MlDsaPublicKey,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let bytes = key.to_bytes();
+        serializer.serialize_str(&hex::encode(bytes))
+    }
+
+    /// Deserialize MlDsaPublicKey
+    pub fn deserialize_ml_dsa_public_key<'de, D>(
+        deserializer: D,
+    ) -> std::result::Result<MlDsaPublicKey, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let s = String::deserialize(deserializer)?;
+        let bytes = hex::decode(&s)
+            .map_err(|e| D::Error::custom(format!("Hex decode error: {}", e)))?;
+        
+        // Create from bytes - we'll use MlDsa65 as default
+        if bytes.len() != 1952 { // ML-DSA-65 public key size
+            return Err(D::Error::custom("Invalid MlDsaPublicKey size"));
+        }
+        
+        let array: [u8; 1952] = bytes.try_into()
+            .map_err(|_| D::Error::custom("Failed to convert to array"))?;
+        
+        Ok(MlDsaPublicKey::from_bytes(MlDsaVariant::MlDsa65, &array)
+            .map_err(|e| D::Error::custom(format!("MlDsaPublicKey decode error: {:?}", e)))?)
+    }
+
+    /// Serialize DebugMlDsaSignature wrapper
+    pub fn serialize_debug_ml_dsa_signature<S>(
+        signature: &DebugMlDsaSignature,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serialize_ml_dsa_signature(&signature.0, serializer)
+    }
+
+    /// Deserialize DebugMlDsaSignature wrapper
+    pub fn deserialize_debug_ml_dsa_signature<'de, D>(
+        deserializer: D,
+    ) -> std::result::Result<DebugMlDsaSignature, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let signature = deserialize_ml_dsa_signature(deserializer)?;
+        Ok(DebugMlDsaSignature(signature))
+    }
+
+    /// Serialize DebugMlDsaPublicKey wrapper
+    pub fn serialize_debug_ml_dsa_public_key<S>(
+        key: &DebugMlDsaPublicKey,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serialize_ml_dsa_public_key(&key.0, serializer)
+    }
+
+    /// Deserialize DebugMlDsaPublicKey wrapper
+    pub fn deserialize_debug_ml_dsa_public_key<'de, D>(
+        deserializer: D,
+    ) -> std::result::Result<DebugMlDsaPublicKey, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let key = deserialize_ml_dsa_public_key(deserializer)?;
+        Ok(DebugMlDsaPublicKey(key))
     }
 }

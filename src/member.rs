@@ -1,11 +1,11 @@
 //! Member identity and key management for MLS groups
 
 use crate::{
-    crypto::{CipherSuite, KeyPair},
+    crypto::{CipherSuite, KeyPair, DebugMlDsaSignature, DebugMlDsaPublicKey},
     MlsError, Result,
 };
 use bincode::Options;
-use saorsa_pqc::api::{MlDsaSignature, MlDsaPublicKey, MlKemPublicKey};
+use saorsa_pqc::api::{MlDsaSignature, MlDsaPublicKey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -40,7 +40,7 @@ impl fmt::Display for MemberId {
 }
 
 /// Identity information for a group member
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberIdentity {
     pub id: MemberId,
     pub name: Option<String>,
@@ -91,12 +91,12 @@ impl MemberIdentity {
 
     /// Get the member's public key for verification
     pub fn verifying_key(&self) -> &MlDsaPublicKey {
-        &self.key_package.verifying_key
+        &self.key_package.verifying_key.0
     }
 }
 
 /// Member credential types
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CredentialType {
     /// Basic credential with identity binding
     Basic = 1,
@@ -105,13 +105,13 @@ pub enum CredentialType {
 }
 
 /// Member credential
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Credential {
     /// Basic credential with self-signed identity
     Basic {
         credential_type: CredentialType,
         identity: Vec<u8>,
-        signature: MlDsaSignature,
+        signature: DebugMlDsaSignature,
     },
     /// Certificate-based credential
     Certificate {
@@ -148,7 +148,7 @@ impl Credential {
         Ok(Self::Basic {
             credential_type: CredentialType::Basic,
             identity,
-            signature,
+            signature: DebugMlDsaSignature(signature),
         })
     }
 
@@ -170,7 +170,7 @@ impl Credential {
             } => {
                 use saorsa_pqc::api::MlDsa;
                 let ml_dsa = MlDsa::new(saorsa_pqc::api::MlDsaVariant::MlDsa65);
-                ml_dsa.verify(verifying_key, identity, signature).is_ok()
+                ml_dsa.verify(verifying_key, identity, &signature.0).is_ok()
             }
             Self::Certificate { .. } => {
                 // Would verify certificate chain in production
@@ -181,22 +181,22 @@ impl Credential {
 }
 
 /// Key package containing public keys and credentials
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyPackage {
     /// Protocol version
     pub version: u16,
     /// Cipher suite for this key package
     pub cipher_suite: CipherSuite,
     /// Public key for message signing
-    pub verifying_key: MlDsaPublicKey,
-    /// Public key for key agreement
-    pub agreement_key: MlKemPublicKey,
+    pub verifying_key: DebugMlDsaPublicKey,
+    /// Public key for key agreement (serialized as bytes)
+    pub agreement_key: Vec<u8>,
     /// Member credential
     pub credential: Credential,
     /// Extensions (reserved for future use)
     pub extensions: Vec<Extension>,
     /// Signature over the key package
-    pub signature: MlDsaSignature,
+    pub signature: DebugMlDsaSignature,
 }
 
 impl KeyPackage {
@@ -210,16 +210,16 @@ impl KeyPackage {
         let mut package = Self {
             version: 1,
             cipher_suite: keypair.suite,
-            verifying_key: keypair.verifying_key().clone(),
-            agreement_key: keypair.public_key().clone(),
+            verifying_key: DebugMlDsaPublicKey(keypair.verifying_key().clone()),
+            agreement_key: keypair.public_key().to_bytes().to_vec(),
             credential,
             extensions: Vec::new(),
-            signature: keypair.sign(&[])?, // Placeholder, will be replaced
+            signature: DebugMlDsaSignature(keypair.sign(&[])?), // Placeholder, will be replaced
         };
 
         // Sign the key package
         let tbs = package.to_be_signed()?;
-        package.signature = keypair.sign(&tbs)?;
+        package.signature = DebugMlDsaSignature(keypair.sign(&tbs)?);
 
         Ok(package)
     }
@@ -228,13 +228,13 @@ impl KeyPackage {
     pub fn verify_signature(&self, data: &[u8], signature: &MlDsaSignature) -> bool {
         use saorsa_pqc::api::MlDsa;
         let ml_dsa = MlDsa::new(self.cipher_suite.ml_dsa_variant());
-        ml_dsa.verify(&self.verifying_key, data, signature).is_ok()
+        ml_dsa.verify(&self.verifying_key.0, data, signature).is_ok()
     }
 
     /// Verify the key package is self-consistent
     pub fn verify(&self) -> Result<bool> {
         let tbs = self.to_be_signed()?;
-        Ok(self.verify_signature(&tbs, &self.signature))
+        Ok(self.verify_signature(&tbs, &self.signature.0))
     }
 
     /// Get the data to be signed for this key package
@@ -249,8 +249,8 @@ impl KeyPackage {
         data.extend_from_slice(&suite_bytes);
         
         // Include public keys
-        data.extend_from_slice(self.verifying_key.as_bytes());
-        data.extend_from_slice(self.agreement_key.as_bytes());
+        data.extend_from_slice(&self.verifying_key.0.to_bytes());
+        data.extend_from_slice(&self.agreement_key);
         
         // Include credential
         let cred_bytes = bincode::DefaultOptions::new()
@@ -263,7 +263,7 @@ impl KeyPackage {
 }
 
 /// Extension types for key packages and messages
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Extension {
     /// Application-specific extension
     ApplicationId(Vec<u8>),
@@ -487,7 +487,12 @@ impl MemberRegistry {
     /// Remove a member from the registry
     pub fn remove_member(&mut self, index: u32) -> Result<GroupMember> {
         self.members.remove(&index)
-            .ok_or_else(|| MlsError::MemberNotFound(MemberId(vec![index as u8])))
+            .ok_or_else(|| {
+                // Create a dummy MemberId for the error - this is just for error reporting
+                let mut uuid_bytes = [0u8; 16];
+                uuid_bytes[0..4].copy_from_slice(&index.to_be_bytes());
+                MlsError::MemberNotFound(MemberId::from_bytes(uuid_bytes))
+            })
     }
     
     /// Get a member by index
@@ -523,6 +528,13 @@ impl MemberRegistry {
     /// Get all member indices
     pub fn member_indices(&self) -> impl Iterator<Item = u32> + '_ {
         self.members.keys().copied()
+    }
+    
+    /// Find member index by MemberId
+    pub fn find_member_index(&self, member_id: &MemberId) -> Option<u32> {
+        self.members.iter()
+            .find(|(_, member)| member.identity.id == *member_id)
+            .map(|(index, _)| *index)
     }
 }
 
@@ -636,8 +648,8 @@ mod tests {
         
         // Verify keys are different between identities
         assert_ne!(
-            identity1.key_package.verifying_key.as_bytes(),
-            identity2.key_package.verifying_key.as_bytes()
+            identity1.key_package.verifying_key.0.to_bytes(),
+            identity2.key_package.verifying_key.0.to_bytes()
         );
     }
 

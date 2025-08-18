@@ -1,8 +1,7 @@
 //! MLS protocol messages and state machine
 
-use crate::{EpochNumber, MessageSequence, MlsError, Result, crypto::*, member::*};
+use crate::{EpochNumber, MessageSequence, MlsError, Result, crypto::{CipherSuite, Hash, DebugMlDsaSignature}, member::*};
 use bincode::Options;
-use saorsa_pqc::api::MlDsaSignature;
 use serde::{Deserialize, Serialize};
 
 /// MLS message types
@@ -38,9 +37,9 @@ impl MlsMessage {
     /// Verify the message signature
     pub fn verify_signature(&self, verifying_key: &saorsa_pqc::api::MlDsaPublicKey) -> bool {
         let (data, signature) = match self {
-            Self::Handshake(msg) => (&msg.content, &msg.signature),
-            Self::Application(msg) => (&msg.ciphertext, &msg.signature),
-            Self::Welcome(msg) => (&msg.group_info, &msg.signature),
+            Self::Handshake(msg) => (&msg.content, &msg.signature.0),
+            Self::Application(msg) => (&msg.ciphertext, &msg.signature.0),
+            Self::Welcome(msg) => (&msg.group_info, &msg.signature.0),
         };
 
         use saorsa_pqc::api::MlDsa;
@@ -68,7 +67,7 @@ pub struct HandshakeMessage {
     pub epoch: EpochNumber,
     pub sender: MemberId,
     pub content: Vec<u8>,
-    pub signature: MlDsaSignature,
+    pub signature: DebugMlDsaSignature,
 }
 
 /// Application message with encrypted payload
@@ -79,7 +78,7 @@ pub struct ApplicationMessage {
     pub generation: u32,
     pub sequence: MessageSequence,
     pub ciphertext: Vec<u8>,
-    pub signature: MlDsaSignature,
+    pub signature: DebugMlDsaSignature,
 }
 
 /// Welcome message for new members
@@ -90,7 +89,7 @@ pub struct WelcomeMessage {
     pub cipher_suite: CipherSuite,
     pub group_info: Vec<u8>,
     pub secrets: Vec<EncryptedGroupSecrets>,
-    pub signature: MlDsaSignature,
+    pub signature: DebugMlDsaSignature,
 }
 
 /// Proposal to add a new member
@@ -109,7 +108,7 @@ pub struct RemoveProposal {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateProposal {
     pub key_package: KeyPackage,
-    pub signature: MlDsaSignature,
+    pub signature: DebugMlDsaSignature,
 }
 
 /// Commit message containing proposals and path updates
@@ -146,7 +145,7 @@ pub struct UpdatePath {
 /// Node in an update path
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdatePathNode {
-    pub public_key: saorsa_pqc::api::MlKemPublicKey,
+    pub public_key: Vec<u8>,
     pub encrypted_path_secret: Vec<EncryptedPathSecret>,
 }
 
@@ -167,7 +166,7 @@ pub struct MessageFrame {
     pub sender: MemberId,
     pub authenticated_data: Vec<u8>,
     pub payload: Vec<u8>,
-    pub signature: MlDsaSignature,
+    pub signature: DebugMlDsaSignature,
 }
 
 /// Message types in the protocol
@@ -216,7 +215,7 @@ pub struct LeafNode {
 /// Parent node in the tree
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParentNode {
-    pub public_key: Option<saorsa_pqc::api::MlKemPublicKey>,
+    pub public_key: Option<Vec<u8>>,
     pub unmerged_leaves: Vec<MemberId>,
 }
 
@@ -225,8 +224,8 @@ pub struct ParentNode {
 pub struct EncryptedPathSecret {
     /// Recipient of this encrypted secret
     pub recipient: MemberId,
-    /// Encrypted path secret using ML-KEM
-    pub ciphertext: saorsa_pqc::api::MlKemCiphertext,
+    /// Encrypted path secret using ML-KEM (serialized as bytes)
+    pub ciphertext: Vec<u8>,
 }
 
 /// Protocol constants
@@ -553,6 +552,11 @@ impl ProtocolStateMachine {
     pub fn is_terminated(&self) -> bool {
         matches!(self.state, ProtocolState::Terminated)
     }
+    
+    /// Set the epoch number (internal use)
+    pub fn set_epoch(&mut self, epoch: u64) {
+        self.epoch = epoch;
+    }
 }
 
 #[cfg(test)]
@@ -675,9 +679,9 @@ mod tests {
     }
 
     // Helper function to create test signature
-    fn create_test_signature() -> MlDsaSignature {
+    fn create_test_signature() -> DebugMlDsaSignature {
         let keypair = KeyPair::generate(CipherSuite::default());
-        keypair.sign(b"test").unwrap()
+        DebugMlDsaSignature(keypair.sign(b"test").unwrap())
     }
 
     #[test]
@@ -691,7 +695,7 @@ mod tests {
         
         let eps = EncryptedPathSecret {
             recipient: member_id,
-            ciphertext,
+            ciphertext: ciphertext.to_bytes(),
         };
         
         assert_eq!(eps.recipient, member_id);
