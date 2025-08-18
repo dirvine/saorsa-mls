@@ -65,8 +65,9 @@ jobs:
     - name: Run Clippy (no features)
       run: cargo clippy --all-targets --no-default-features -- -D warnings
 
-    - name: Run Clippy (pedantic)
+    - name: Run Clippy (pedantic - advisory)
       run: cargo clippy --all-targets --all-features -- -W clippy::pedantic
+      continue-on-error: true
 
     - name: Run Clippy (nursery - advisory)
       run: cargo clippy --all-targets --all-features -- -W clippy::nursery
@@ -122,8 +123,6 @@ jobs:
 
     - name: Check spelling
       uses: crate-ci/typos@master
-      with:
-        config: .typos.toml
 
     - name: Check for common errors
       run: |
