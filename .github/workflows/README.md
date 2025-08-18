@@ -164,3 +164,9 @@ cargo doc --all-features --no-deps
 ---
 
 **Note**: These workflows are designed for a cryptographic library with the highest security and quality standards. Adjust as needed for your specific use case.
+
+---
+
+## CI/CD Status
+
+Last validated: 2025-08-18T22:45:36Z
