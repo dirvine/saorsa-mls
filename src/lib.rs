@@ -28,16 +28,16 @@
 //! ## Example Usage
 //!
 //! ```rust
-//! use saorsa_mls::{MlsGroup, MemberIdentity, GroupConfig};
+//! use saorsa_mls::{MlsGroup, MemberIdentity, MemberId, GroupConfig};
 //!
 //! # async fn example() -> anyhow::Result<()> {
 //! // Create a new MLS group
 //! let config = GroupConfig::default();
-//! let creator_identity = MemberIdentity::generate()?;
+//! let creator_identity = MemberIdentity::generate(MemberId::generate())?;
 //! let mut group = MlsGroup::new(config, creator_identity).await?;
 //!
 //! // Add members to the group
-//! let new_member = MemberIdentity::generate()?;
+//! let new_member = MemberIdentity::generate(MemberId::generate())?;
 //! let welcome = group.add_member(&new_member).await?;
 //!
 //! // Send encrypted messages

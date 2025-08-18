@@ -390,10 +390,9 @@ impl GroupId {
     
     /// Generate a random group ID
     pub fn generate() -> Self {
-        use rand::RngCore;
-        let mut rng = rand::thread_rng();
+        use rand_core::{OsRng, RngCore};
         let mut id = vec![0u8; 32];
-        rng.fill_bytes(&mut id);
+        OsRng.fill_bytes(&mut id);
         Self(id)
     }
     

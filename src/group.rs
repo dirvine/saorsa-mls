@@ -23,8 +23,6 @@ struct ReplayWindow {
 }
 
 impl ReplayWindow {
-    fn new() -> Self { Self { max_seen: 0, window: 0 } }
-
     // Allow if sequence is new within a 64-slot window; update state
     fn allow_and_update(&mut self, seq: u64) -> bool {
         if seq > self.max_seen {
@@ -273,7 +271,7 @@ impl MlsGroup {
         if !self
             .recv_windows
             .entry(message.sender)
-            .or_insert_with(ReplayWindow::new)
+            .or_default()
             .allow_and_update(message.sequence)
         {
             return Err(MlsError::ProtocolError("replay detected".to_string()));
@@ -461,11 +459,10 @@ impl MlsGroup {
 
     pub fn is_member_active(&self, member_id: &MemberId) -> bool {
         let members = self.members.read();
-        if let Some(index) = members.find_member_index(member_id) {
-            if let Some(member) = members.get_member(index) {
+        if let Some(index) = members.find_member_index(member_id)
+            && let Some(member) = members.get_member(index) {
                 return member.is_active();
             }
-        }
         false
     }
 
@@ -548,7 +545,7 @@ impl TreeKemState {
 
         // Create leaf node
         let leaf = TreeNode {
-            public_key: public_key,
+            public_key,
             secret: random_bytes(32),
             parent: self.parent_index(position),
         };
