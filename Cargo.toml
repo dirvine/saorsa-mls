@@ -15,7 +15,7 @@ categories = ["cryptography", "network-programming"]
 [dependencies]
 # Core
 anyhow = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 bytes = "1.5"
 serde = { version = "1.0", features = ["derive"] }
 bincode = "1.3"
