@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/saorsa-mls.svg)](https://crates.io/crates/saorsa-mls)
 [![Documentation](https://docs.rs/saorsa-mls/badge.svg)](https://docs.rs/saorsa-mls)
-[![CI](https://github.com/dirvine/saorsa-mls/actions/workflows/ci.yml/badge.svg)](https://github.com/dirvine/saorsa-mls/actions)
+[![Tests](https://github.com/dirvine/saorsa-mls/actions/workflows/test.yml/badge.svg)](https://github.com/dirvine/saorsa-mls/actions/workflows/test.yml)
 
 Experimental implementation of the Message Layer Security (MLS) Protocol ([RFC 9420](https://datatracker.ietf.org/doc/rfc9420/)) with post-quantum cryptography enhancements for P2P secure group communication.
 

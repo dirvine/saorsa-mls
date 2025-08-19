@@ -461,10 +461,10 @@ impl MlsGroup {
 
     pub fn is_member_active(&self, member_id: &MemberId) -> bool {
         let members = self.members.read();
-        if let Some(index) = members.find_member_index(member_id)
-            && let Some(member) = members.get_member(index)
-        {
-            return member.is_active();
+        if let Some(index) = members.find_member_index(member_id) {
+            if let Some(member) = members.get_member(index) {
+                return member.is_active();
+            }
         }
         false
     }
@@ -611,16 +611,16 @@ impl TreeKemState {
             let mut parent_secret = Vec::new();
 
             // Combine secrets from children
-            if let Some(left_idx) = left_child
-                && let Some(Some(left_node)) = self.nodes.get(left_idx)
-            {
-                parent_secret.extend_from_slice(&left_node.secret);
+            if let Some(left_idx) = left_child {
+                if let Some(Some(left_node)) = self.nodes.get(left_idx) {
+                    parent_secret.extend_from_slice(&left_node.secret);
+                }
             }
 
-            if let Some(right_idx) = right_child
-                && let Some(Some(right_node)) = self.nodes.get(right_idx)
-            {
-                parent_secret.extend_from_slice(&right_node.secret);
+            if let Some(right_idx) = right_child {
+                if let Some(Some(right_node)) = self.nodes.get(right_idx) {
+                    parent_secret.extend_from_slice(&right_node.secret);
+                }
             }
 
             // Hash combined secrets for parent
