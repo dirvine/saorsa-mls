@@ -69,7 +69,7 @@ jobs:
       run: cargo clippy --all-targets --all-features -- -W clippy::pedantic
       continue-on-error: true
 
-    - name: Run Clippy (nursery - advisory)
+    - name: Run Clippy (nursery - advisory) 
       run: cargo clippy --all-targets --all-features -- -W clippy::nursery
       continue-on-error: true
 

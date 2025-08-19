@@ -77,7 +77,12 @@ jobs:
       run: cargo test --doc --all-features
 
     - name: Run integration tests
-      run: cargo nextest run --test '*' --all-features
+      run: |
+        if [ -d "tests" ] && [ "$(ls -A tests/*.rs 2>/dev/null)" ]; then
+          cargo nextest run --test '*' --all-features
+        else
+          echo "No integration tests found, skipping"
+        fi
 
     - name: Run property-based tests (proptest)
       run: cargo test --all-features -- --include-ignored proptest
