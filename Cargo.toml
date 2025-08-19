@@ -27,7 +27,7 @@ saorsa-pqc = "0.3.5"
 chacha20poly1305 = "0.10"
 
 # Random number generation (shared with saorsa-pqc)
-rand_core = { version = "0.6", features = ["getrandom"] }
+rand_core = { version = "0.9", features = ["getrandom"] }
 
 # Constant-time operations (also used by saorsa-pqc)
 subtle = "2.5"
