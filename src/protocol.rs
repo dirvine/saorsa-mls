@@ -1,9 +1,9 @@
 //! MLS protocol messages and state machine
 
 use crate::{
-    EpochNumber, MessageSequence, MlsError, Result,
     crypto::{CipherSuite, DebugMlDsaSignature, Hash},
     member::*,
+    EpochNumber, MessageSequence, MlsError, Result,
 };
 use bincode::Options;
 use serde::{Deserialize, Serialize};

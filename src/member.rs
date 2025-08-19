@@ -1,8 +1,8 @@
 //! Member identity and key management for MLS groups
 
 use crate::{
-    MlsError, Result,
     crypto::{CipherSuite, DebugMlDsaPublicKey, DebugMlDsaSignature, KeyPair},
+    MlsError, Result,
 };
 use bincode::Options;
 use saorsa_pqc::api::{MlDsaPublicKey, MlDsaSignature};

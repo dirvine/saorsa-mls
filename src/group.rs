@@ -3,14 +3,14 @@
 //
 // Fixed version of group.rs that resolves deadlock issues
 
-use crate::{EpochNumber, MlsError, MlsStats, Result, crypto::*, member::*, protocol::*};
+use crate::{crypto::*, member::*, protocol::*, EpochNumber, MlsError, MlsStats, Result};
 use bincode::Options;
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use std::{
     sync::{
-        Arc,
         atomic::{AtomicU64, Ordering},
+        Arc,
     },
     time::SystemTime,
 };
