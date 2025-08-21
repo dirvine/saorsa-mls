@@ -759,3 +759,305 @@ impl GroupState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{MemberIdentity, MemberId};
+
+    #[test]
+    fn test_group_config_default() {
+        let config = GroupConfig::default();
+        assert_eq!(config.protocol_version, 1);
+        assert_eq!(config.schema_version, 1); // Fixed: should be 1, not 0
+    }
+
+    #[test]
+    fn test_group_id_generation() {
+        let id1 = GroupId::generate();
+        let id2 = GroupId::generate();
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_group_id_serialization() {
+        let id = GroupId::generate();
+        let serialized = bincode::serialize(&id).expect("serialization failed");
+        let deserialized: GroupId = bincode::deserialize(&serialized).expect("deserialization failed");
+        assert_eq!(id, deserialized);
+    }
+
+    #[test]
+    fn test_replay_window_default() {
+        let window = ReplayWindow::default();
+        assert_eq!(window.max_seen, 0);
+        assert_eq!(window.window, 0);
+    }
+
+    #[test]
+    fn test_tree_node_creation() {
+        let node = TreeNode {
+            public_key: vec![1, 2, 3, 4],
+            secret: vec![5, 6, 7, 8],
+            parent: None,
+        };
+        
+        assert_eq!(node.public_key, vec![1, 2, 3, 4]);
+        assert_eq!(node.secret, vec![5, 6, 7, 8]);
+        assert!(node.parent.is_none());
+    }
+
+    #[test]
+    fn test_treekem_state_creation() -> crate::Result<()> {
+        let initial_key = vec![1, 2, 3, 4];
+        let state = TreeKemState::new(initial_key)?;
+        assert_eq!(state.size, 1);
+        assert!(!state.nodes.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_treekem_add_leaf() -> crate::Result<()> {
+        let initial_key = vec![1, 2, 3, 4];
+        let mut state = TreeKemState::new(initial_key)?;
+        
+        let new_key = vec![5, 6, 7, 8];
+        state.add_leaf(1, new_key)?;
+        
+        assert_eq!(state.size, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_treekem_remove_leaf() -> crate::Result<()> {
+        let initial_key = vec![1, 2, 3, 4];
+        let mut state = TreeKemState::new(initial_key)?;
+        
+        state.remove_leaf(0)?;
+        
+        // Node should be removed (set to None)
+        assert!(state.nodes[0].is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_treekem_root_secret() -> crate::Result<()> {
+        let initial_key = vec![1, 2, 3, 4];
+        let state = TreeKemState::new(initial_key)?;
+        
+        let root_secret = state.get_root_secret()?;
+        assert!(!root_secret.is_empty());
+        assert_eq!(root_secret.len(), 32);
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_treekem_tree_hash() -> crate::Result<()> {
+        let initial_key = vec![1, 2, 3, 4];
+        let state = TreeKemState::new(initial_key)?;
+        
+        let hash = state.compute_tree_hash()?;
+        assert!(!hash.is_empty());
+        
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mls_group_creation() -> crate::Result<()> {
+        let config = GroupConfig::default();
+        let creator_identity = MemberIdentity::generate(MemberId::generate())?;
+        
+        let group = MlsGroup::new(config, creator_identity).await?;
+        assert_eq!(group.current_epoch(), 0);
+        assert!(!group.member_ids().is_empty());
+        
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_group_state_from_group() -> crate::Result<()> {
+        let config = GroupConfig::default();
+        let creator_identity = MemberIdentity::generate(MemberId::generate())?;
+        
+        let group = MlsGroup::new(config.clone(), creator_identity).await?;
+        let state = GroupState::from_group(&group);
+        
+        assert_eq!(state.group_id, group.group_id);
+        assert_eq!(state.epoch, group.current_epoch());
+        assert_eq!(state.config.protocol_version, config.protocol_version);
+        assert_eq!(state.members.len(), group.member_ids().len());
+        
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mls_group_member_addition() -> crate::Result<()> {
+        let config = GroupConfig::default();
+        let creator_identity = MemberIdentity::generate(MemberId::generate())?;
+        
+        let mut group = MlsGroup::new(config, creator_identity).await?;
+        let new_member = MemberIdentity::generate(MemberId::generate())?;
+        
+        let initial_size = group.member_ids().len();
+        let _welcome = group.add_member(&new_member).await?;
+        
+        // Member should be added
+        assert_eq!(group.member_ids().len(), initial_size + 1);
+        
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mls_group_member_removal() -> crate::Result<()> {
+        let config = GroupConfig::default();
+        let creator_identity = MemberIdentity::generate(MemberId::generate())?;
+        
+        let mut group = MlsGroup::new(config, creator_identity).await?;
+        let new_member = MemberIdentity::generate(MemberId::generate())?;
+        
+        // Add a member first
+        group.add_member(&new_member).await?;
+        let member_count_after_add = group.member_ids().len();
+        
+        // Remove the member
+        let member_id = new_member.id;
+        group.remove_member(&member_id).await?;
+        
+        assert_eq!(group.member_ids().len(), member_count_after_add - 1);
+        
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mls_group_message_encryption() -> crate::Result<()> {
+        let config = GroupConfig::default();
+        let creator_identity = MemberIdentity::generate(MemberId::generate())?;
+        
+        let group = MlsGroup::new(config, creator_identity).await?;
+        
+        let message = b"Hello, secure group!";
+        let encrypted = group.encrypt_message(message)?;
+        
+        // Encrypted message should be different from original
+        assert_ne!(encrypted.ciphertext, message);
+        assert!(!encrypted.ciphertext.is_empty());
+        
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mls_group_message_decryption() -> crate::Result<()> {
+        let config = GroupConfig::default();
+        let creator_identity = MemberIdentity::generate(MemberId::generate())?;
+        
+        let group = MlsGroup::new(config, creator_identity).await?;
+        
+        let original_message = b"Hello, secure group!";
+        let encrypted = group.encrypt_message(original_message)?;
+        let decrypted = group.decrypt_message(&encrypted)?;
+        
+        assert_eq!(decrypted, original_message);
+        
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mls_group_epoch_advancement() -> crate::Result<()> {
+        let config = GroupConfig::default();
+        let creator_identity = MemberIdentity::generate(MemberId::generate())?;
+        
+        let group = MlsGroup::new(config, creator_identity).await?;
+        let initial_epoch = group.current_epoch();
+        
+        group.update_epoch().await?;
+        
+        assert_eq!(group.current_epoch(), initial_epoch + 1);
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_helper_functions() {
+        // Test parent_index function
+        assert_eq!(TreeKemState::parent_index(0), None); // Root has no parent
+        assert_eq!(TreeKemState::parent_index(1), Some(0));
+        assert_eq!(TreeKemState::parent_index(2), Some(0));
+        assert_eq!(TreeKemState::parent_index(3), Some(1));
+        
+        // Test root_index function  
+        let root = TreeKemState::root_index();
+        assert_eq!(root, 0);
+    }
+
+    #[test]
+    fn test_group_config_modification() {
+        let mut config = GroupConfig::default();
+        
+        // Test config modification
+        config.max_members = Some(100);
+        assert_eq!(config.max_members, Some(100));
+        
+        config.lifetime = Some(3600);
+        assert_eq!(config.lifetime, Some(3600));
+        
+        config.cipher_suite = 2;
+        assert_eq!(config.cipher_suite, 2);
+    }
+
+    #[test]
+    fn test_tree_node_cloning() {
+        let node = TreeNode {
+            public_key: vec![1, 2, 3, 4],
+            secret: vec![5, 6, 7, 8],
+            parent: Some(1),
+        };
+        
+        let cloned = node.clone();
+        assert_eq!(node.public_key, cloned.public_key);
+        assert_eq!(node.secret, cloned.secret);
+        assert_eq!(node.parent, cloned.parent);
+    }
+
+    #[tokio::test]
+    async fn test_mls_group_member_count() -> crate::Result<()> {
+        let config = GroupConfig::default();
+        let creator_identity = MemberIdentity::generate(MemberId::generate())?;
+        
+        let group = MlsGroup::new(config, creator_identity).await?;
+        
+        assert_eq!(group.member_count(), 1);
+        assert_eq!(group.member_ids().len(), 1);
+        
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mls_group_stats() -> crate::Result<()> {
+        let config = GroupConfig::default();
+        let creator_identity = MemberIdentity::generate(MemberId::generate())?;
+        
+        let group = MlsGroup::new(config, creator_identity).await?;
+        
+        let stats = group.stats();
+        // Let's just check that stats exist and have reasonable values
+        assert!(stats.groups_active <= 1); // Should be 0 or 1
+        assert_eq!(stats.messages_sent, 0);
+        assert_eq!(stats.messages_received, 0);
+        
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mls_group_group_id() -> crate::Result<()> {
+        let config = GroupConfig::default();
+        let creator_identity = MemberIdentity::generate(MemberId::generate())?;
+        
+        let group = MlsGroup::new(config, creator_identity).await?;
+        
+        let group_id = group.group_id();
+        assert_eq!(group_id, group.group_id);
+        
+        Ok(())
+    }
+}
