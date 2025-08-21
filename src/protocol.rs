@@ -638,12 +638,12 @@ mod tests {
 
         match leaf {
             TreeNode::Leaf(_) => (),
-            _ => panic!("Expected leaf node"),
+            TreeNode::Parent(_) => panic!("Expected leaf node"),
         }
 
         match parent {
             TreeNode::Parent(_) => (),
-            _ => panic!("Expected parent node"),
+            TreeNode::Leaf(_) => panic!("Expected parent node"),
         }
     }
 

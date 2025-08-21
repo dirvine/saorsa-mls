@@ -33,6 +33,7 @@ impl Default for CipherSuite {
 
 impl CipherSuite {
     /// Get the ML-KEM variant for this cipher suite
+    #[must_use]
     pub fn ml_kem_variant(&self) -> MlKemVariant {
         match self {
             Self::MlKem768MlDsa65 | Self::HybridClassicalPqc => MlKemVariant::MlKem768,
@@ -41,6 +42,7 @@ impl CipherSuite {
     }
 
     /// Get the ML-DSA variant for this cipher suite
+    #[must_use]
     pub fn ml_dsa_variant(&self) -> MlDsaVariant {
         match self {
             Self::MlKem768MlDsa65 | Self::HybridClassicalPqc => MlDsaVariant::MlDsa65,
@@ -49,16 +51,19 @@ impl CipherSuite {
     }
 
     /// Get the key size for symmetric encryption
+    #[must_use]
     pub fn key_size(&self) -> usize {
         32 // ChaCha20Poly1305 uses 256-bit keys
     }
 
     /// Get the nonce size for AEAD
+    #[must_use]
     pub fn nonce_size(&self) -> usize {
         12 // ChaCha20Poly1305 uses 96-bit nonces
     }
 
     /// Get the hash output size
+    #[must_use]
     pub fn hash_size(&self) -> usize {
         32 // BLAKE3 default output
     }
@@ -70,11 +75,13 @@ pub struct Hash {
 }
 
 impl Hash {
+    #[must_use]
     pub fn new(suite: CipherSuite) -> Self {
         Self { suite }
     }
 
     /// Compute hash of data using BLAKE3 from saorsa-pqc
+    #[must_use]
     pub fn hash(&self, data: &[u8]) -> Vec<u8> {
         use saorsa_pqc::api::hash::Blake3Hasher;
         use saorsa_pqc::api::traits::Hash as HashTrait;
@@ -86,12 +93,16 @@ impl Hash {
     }
 
     /// Compute HMAC using saorsa-pqc's HMAC-SHA3-256
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if the HMAC key is invalid or computation fails.
     pub fn hmac(&self, key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
         use saorsa_pqc::api::hmac::HmacSha3_256;
         use saorsa_pqc::api::traits::Mac;
 
         let mut mac = HmacSha3_256::new(key)
-            .map_err(|e| MlsError::CryptoError(format!("HMAC key error: {:?}", e)))?;
+            .map_err(|e| MlsError::CryptoError(format!("HMAC key error: {e:?}")))?;
         mac.update(data);
         let output = mac.finalize();
         Ok(output.as_ref().to_vec())
@@ -105,24 +116,33 @@ pub struct KeySchedule {
 }
 
 impl KeySchedule {
+    #[must_use]
     pub fn new(suite: CipherSuite) -> Self {
         Self { suite }
     }
 
     /// Derive key using saorsa-pqc's HKDF-SHA3-256
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if the HKDF key derivation fails.
     pub fn derive_secret(&self, secret: &[u8], label: &str, context: &[u8]) -> Result<Vec<u8>> {
         use saorsa_pqc::api::kdf::HkdfSha3_256;
         use saorsa_pqc::api::traits::Kdf;
 
-        let info = self.build_hkdf_label(label, context, self.suite.hash_size());
+        let info = Self::build_hkdf_label(label, context, self.suite.hash_size());
         let mut output = vec![0u8; self.suite.hash_size()];
 
         HkdfSha3_256::derive(secret, None, &info, &mut output)
-            .map_err(|e| MlsError::CryptoError(format!("HKDF error: {:?}", e)))?;
+            .map_err(|e| MlsError::CryptoError(format!("HKDF error: {e:?}")))?;
         Ok(output)
     }
 
     /// Derive multiple keys using saorsa-pqc's HKDF
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if any key derivation fails.
     pub fn derive_keys(
         &self,
         salt: &[u8],
@@ -140,6 +160,10 @@ impl KeySchedule {
     }
 
     /// Derive a single key with specific length using saorsa-pqc's HKDF
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if the HKDF key derivation fails.
     pub fn derive_key(
         &self,
         salt: &[u8],
@@ -152,17 +176,20 @@ impl KeySchedule {
 
         let mut output = vec![0u8; length];
         HkdfSha3_256::derive(secret, Some(salt), info, &mut output)
-            .map_err(|e| MlsError::CryptoError(format!("HKDF error: {:?}", e)))?;
+            .map_err(|e| MlsError::CryptoError(format!("HKDF error: {e:?}")))?;
         Ok(output)
     }
 
-    fn build_hkdf_label(&self, label: &str, context: &[u8], length: usize) -> Vec<u8> {
+    fn build_hkdf_label(label: &str, context: &[u8], length: usize) -> Vec<u8> {
         let mut info = Vec::new();
-        info.extend_from_slice(&(length as u16).to_be_bytes());
-        info.push(b"tls13 ".len() as u8 + label.len() as u8);
+        info.extend_from_slice(&u16::try_from(length).unwrap_or(u16::MAX).to_be_bytes());
+        info.push(
+            u8::try_from(b"tls13 ".len()).unwrap_or(u8::MAX)
+                + u8::try_from(label.len()).unwrap_or(u8::MAX),
+        );
         info.extend_from_slice(b"tls13 ");
         info.extend_from_slice(label.as_bytes());
-        info.push(context.len() as u8);
+        info.push(u8::try_from(context.len()).unwrap_or(u8::MAX));
         info.extend_from_slice(context);
         info
     }
@@ -188,12 +215,17 @@ impl std::fmt::Debug for KeyPair {
             .field("suite", &self.suite)
             .field("verifying_key", &"<hidden>")
             .field("kem_public", &"<hidden>")
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 impl KeyPair {
     /// Generate a new key pair
+    ///
+    /// # Panics
+    ///
+    /// Panics if key generation fails (should never happen in practice).
+    #[must_use]
     pub fn generate(suite: CipherSuite) -> Self {
         // Generate ML-DSA key pair for signing
         let ml_dsa = MlDsa::new(suite.ml_dsa_variant());
@@ -217,32 +249,46 @@ impl KeyPair {
     }
 
     /// Get the public verification key
+    #[must_use]
     pub fn verifying_key(&self) -> &MlDsaPublicKey {
         &self.verifying_key
     }
 
     /// Get the public KEM key
+    #[must_use]
     pub fn public_key(&self) -> &MlKemPublicKey {
         &self.kem_public
     }
 
     /// Sign a message
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if the signing operation fails.
     pub fn sign(&self, message: &[u8]) -> Result<MlDsaSignature> {
         let ml_dsa = MlDsa::new(self.suite.ml_dsa_variant());
         ml_dsa
             .sign(&self.signing_key, message)
-            .map_err(|e| MlsError::CryptoError(format!("Signing failed: {:?}", e)))
+            .map_err(|e| MlsError::CryptoError(format!("Signing failed: {e:?}")))
     }
 
     /// Verify a signature
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if the verification operation fails.
     pub fn verify(&self, message: &[u8], signature: &MlDsaSignature) -> Result<bool> {
         let ml_dsa = MlDsa::new(self.suite.ml_dsa_variant());
         ml_dsa
             .verify(&self.verifying_key, message, signature)
-            .map_err(|e| MlsError::CryptoError(format!("Verification error: {:?}", e)))
+            .map_err(|e| MlsError::CryptoError(format!("Verification error: {e:?}")))
     }
 
     /// Perform key encapsulation
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if the encapsulation operation fails.
     pub fn encapsulate(
         &self,
         recipient_public: &MlKemPublicKey,
@@ -250,20 +296,24 @@ impl KeyPair {
         let ml_kem = MlKem::new(self.suite.ml_kem_variant());
         let (shared_secret, ciphertext) = ml_kem
             .encapsulate(recipient_public)
-            .map_err(|e| MlsError::CryptoError(format!("Encapsulation failed: {:?}", e)))?;
+            .map_err(|e| MlsError::CryptoError(format!("Encapsulation failed: {e:?}")))?;
         Ok((ciphertext, shared_secret))
     }
 
     /// Perform key decapsulation
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if the decapsulation operation fails.
     pub fn decapsulate(&self, ciphertext: &MlKemCiphertext) -> Result<MlKemSharedSecret> {
         let ml_kem = MlKem::new(self.suite.ml_kem_variant());
         ml_kem
             .decapsulate(&self.kem_secret, ciphertext)
-            .map_err(|e| MlsError::CryptoError(format!("Decapsulation failed: {:?}", e)))
+            .map_err(|e| MlsError::CryptoError(format!("Decapsulation failed: {e:?}")))
     }
 }
 
-/// AEAD encryption/decryption using saorsa-pqc's ChaCha20Poly1305
+/// AEAD encryption/decryption using saorsa-pqc's `ChaCha20Poly1305`
 #[derive(Debug)]
 pub struct AeadCipher {
     key: Vec<u8>,
@@ -272,6 +322,10 @@ pub struct AeadCipher {
 
 impl AeadCipher {
     /// Create a new AEAD cipher from key material
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if the key size is invalid.
     pub fn new(key: Vec<u8>, suite: CipherSuite) -> Result<Self> {
         if key.len() != suite.key_size() {
             return Err(MlsError::CryptoError(format!(
@@ -284,19 +338,23 @@ impl AeadCipher {
         Ok(Self { key, suite })
     }
 
-    /// Encrypt plaintext with associated data using saorsa-pqc's ChaCha20Poly1305
+    /// Encrypt plaintext with associated data using saorsa-pqc's `ChaCha20Poly1305`
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if the nonce size is invalid or encryption fails.
     pub fn encrypt(
         &self,
         nonce: &[u8],
         plaintext: &[u8],
         associated_data: &[u8],
     ) -> Result<Vec<u8>> {
+        // Use saorsa-pqc's ChaCha20Poly1305
+        use saorsa_pqc::api::symmetric::ChaCha20Poly1305 as PqcCipher;
+
         if nonce.len() != self.suite.nonce_size() {
             return Err(MlsError::CryptoError("Invalid nonce size".to_string()));
         }
-
-        // Use saorsa-pqc's ChaCha20Poly1305
-        use saorsa_pqc::api::symmetric::ChaCha20Poly1305 as PqcCipher;
 
         // Convert key to the format expected by saorsa-pqc
         let key_array: [u8; 32] = self
@@ -317,7 +375,7 @@ impl AeadCipher {
         // Encrypt with AAD
         let ciphertext = cipher
             .encrypt_with_aad(&nonce_obj, plaintext, associated_data)
-            .map_err(|e| MlsError::CryptoError(format!("Encryption failed: {:?}", e)))?;
+            .map_err(|e| MlsError::CryptoError(format!("Encryption failed: {e:?}")))?;
 
         // Return nonce + ciphertext for wire format
         let mut result = nonce.to_vec();
@@ -325,13 +383,20 @@ impl AeadCipher {
         Ok(result)
     }
 
-    /// Decrypt ciphertext with associated data using saorsa-pqc's ChaCha20Poly1305
+    /// Decrypt ciphertext with associated data using saorsa-pqc's `ChaCha20Poly1305`
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if the nonce size is invalid, ciphertext is too short, or decryption fails.
     pub fn decrypt(
         &self,
         nonce: &[u8],
         ciphertext: &[u8],
         associated_data: &[u8],
     ) -> Result<Vec<u8>> {
+        // Use saorsa-pqc's ChaCha20Poly1305
+        use saorsa_pqc::api::symmetric::ChaCha20Poly1305 as PqcCipher;
+
         if nonce.len() != self.suite.nonce_size() {
             return Err(MlsError::CryptoError("Invalid nonce size".to_string()));
         }
@@ -344,9 +409,6 @@ impl AeadCipher {
 
         let actual_nonce = &ciphertext[..12];
         let actual_ciphertext = &ciphertext[12..];
-
-        // Use saorsa-pqc's ChaCha20Poly1305
-        use saorsa_pqc::api::symmetric::ChaCha20Poly1305 as PqcCipher;
 
         // Convert key to the format expected by saorsa-pqc
         let key_array: [u8; 32] = self
@@ -367,23 +429,26 @@ impl AeadCipher {
         // Decrypt with AAD
         let plaintext = cipher
             .decrypt_with_aad(&nonce_obj, actual_ciphertext, associated_data)
-            .map_err(|e| MlsError::CryptoError(format!("Decryption failed: {:?}", e)))?;
+            .map_err(|e| MlsError::CryptoError(format!("Decryption failed: {e:?}")))?;
 
         Ok(plaintext)
     }
 
     /// Get the key size for this cipher
+    #[must_use]
     pub fn key_size(&self) -> usize {
         self.suite.key_size()
     }
 
     /// Get the nonce size for this cipher
+    #[must_use]
     pub fn nonce_size(&self) -> usize {
         self.suite.nonce_size()
     }
 }
 
 /// Generate random bytes using the same RNG as saorsa-pqc
+#[must_use]
 pub fn random_bytes(len: usize) -> Vec<u8> {
     use rand_core::{OsRng, RngCore};
     let mut bytes = vec![0u8; len];
@@ -392,6 +457,7 @@ pub fn random_bytes(len: usize) -> Vec<u8> {
 }
 
 /// Constant-time comparison using subtle crate (already a dependency of saorsa-pqc)
+#[must_use]
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     use subtle::ConstantTimeEq;
     a.ct_eq(b).into()
@@ -432,18 +498,22 @@ pub struct SecretBytes {
 }
 
 impl SecretBytes {
+    #[must_use]
     pub fn new(bytes: Vec<u8>) -> Self {
         Self { inner: bytes }
     }
 
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.inner
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.inner.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
@@ -552,7 +622,7 @@ mod tests {
     }
 }
 
-/// Debug wrapper for MlDsaSignature to work around missing Debug impl
+/// Debug wrapper for `MlDsaSignature` to work around missing Debug impl
 #[derive(Clone)]
 pub struct DebugMlDsaSignature(pub MlDsaSignature);
 
@@ -589,7 +659,7 @@ impl<'de> Deserialize<'de> for DebugMlDsaSignature {
     }
 }
 
-/// Debug wrapper for MlDsaPublicKey to work around missing Debug impl
+/// Debug wrapper for `MlDsaPublicKey` to work around missing Debug impl
 #[derive(Clone)]
 pub struct DebugMlDsaPublicKey(pub MlDsaPublicKey);
 
@@ -628,9 +698,17 @@ impl<'de> Deserialize<'de> for DebugMlDsaPublicKey {
 
 /// Serde wrappers for saorsa-pqc types
 pub mod serde_wrappers {
-    use super::*;
+    use super::{
+        DebugMlDsaPublicKey, DebugMlDsaSignature, MlDsaPublicKey, MlDsaSignature, MlKemCiphertext,
+    };
+    use saorsa_pqc::{MlDsaVariant, MlKemVariant};
+    use serde::{Deserialize, Deserializer, Serializer};
 
-    /// Serialize MlKemCiphertext
+    /// Serialize `MlKemCiphertext`
+    ///
+    /// # Errors
+    ///
+    /// Returns a serialization error if the ciphertext cannot be serialized.
     pub fn serialize_ml_kem_ciphertext<S>(
         ciphertext: &MlKemCiphertext,
         serializer: S,
@@ -643,7 +721,11 @@ pub mod serde_wrappers {
         serializer.serialize_str(&format!("{}:{}", variant as u8, hex::encode(&bytes)))
     }
 
-    /// Deserialize MlKemCiphertext
+    /// Deserialize `MlKemCiphertext`
+    ///
+    /// # Errors
+    ///
+    /// Returns a deserialization error if the ciphertext cannot be deserialized.
     pub fn deserialize_ml_kem_ciphertext<'de, D>(
         deserializer: D,
     ) -> std::result::Result<MlKemCiphertext, D::Error>
@@ -665,13 +747,17 @@ pub mod serde_wrappers {
         };
 
         let bytes = hex::decode(parts[1])
-            .map_err(|e| D::Error::custom(format!("Hex decode error: {}", e)))?;
+            .map_err(|e| D::Error::custom(format!("Hex decode error: {e}")))?;
 
         MlKemCiphertext::from_bytes(variant, &bytes)
-            .map_err(|e| D::Error::custom(format!("MlKemCiphertext decode error: {:?}", e)))
+            .map_err(|e| D::Error::custom(format!("MlKemCiphertext decode error: {e:?}")))
     }
 
-    /// Serialize MlDsaSignature
+    /// Serialize `MlDsaSignature`
+    ///
+    /// # Errors
+    ///
+    /// Returns a serialization error if the signature cannot be serialized.
     pub fn serialize_ml_dsa_signature<S>(
         signature: &MlDsaSignature,
         serializer: S,
@@ -683,7 +769,11 @@ pub mod serde_wrappers {
         serializer.serialize_str(&hex::encode(bytes))
     }
 
-    /// Deserialize MlDsaSignature
+    /// Deserialize `MlDsaSignature`
+    ///
+    /// # Errors
+    ///
+    /// Returns a deserialization error if the signature cannot be deserialized.
     pub fn deserialize_ml_dsa_signature<'de, D>(
         deserializer: D,
     ) -> std::result::Result<MlDsaSignature, D::Error>
@@ -693,7 +783,7 @@ pub mod serde_wrappers {
         use serde::de::Error;
         let s = String::deserialize(deserializer)?;
         let bytes =
-            hex::decode(&s).map_err(|e| D::Error::custom(format!("Hex decode error: {}", e)))?;
+            hex::decode(&s).map_err(|e| D::Error::custom(format!("Hex decode error: {e}")))?;
 
         // Create from bytes - we'll use MlDsa65 as default
         if bytes.len() != 3309 {
@@ -706,10 +796,14 @@ pub mod serde_wrappers {
             .map_err(|_| D::Error::custom("Failed to convert to array"))?;
 
         MlDsaSignature::from_bytes(MlDsaVariant::MlDsa65, &array)
-            .map_err(|e| D::Error::custom(format!("MlDsaSignature decode error: {:?}", e)))
+            .map_err(|e| D::Error::custom(format!("MlDsaSignature decode error: {e:?}")))
     }
 
-    /// Serialize MlDsaPublicKey
+    /// Serialize `MlDsaPublicKey`
+    ///
+    /// # Errors
+    ///
+    /// Returns a serialization error if the public key cannot be serialized.
     pub fn serialize_ml_dsa_public_key<S>(
         key: &MlDsaPublicKey,
         serializer: S,
@@ -721,7 +815,11 @@ pub mod serde_wrappers {
         serializer.serialize_str(&hex::encode(bytes))
     }
 
-    /// Deserialize MlDsaPublicKey
+    /// Deserialize `MlDsaPublicKey`
+    ///
+    /// # Errors
+    ///
+    /// Returns a deserialization error if the public key cannot be deserialized.
     pub fn deserialize_ml_dsa_public_key<'de, D>(
         deserializer: D,
     ) -> std::result::Result<MlDsaPublicKey, D::Error>
@@ -731,7 +829,7 @@ pub mod serde_wrappers {
         use serde::de::Error;
         let s = String::deserialize(deserializer)?;
         let bytes =
-            hex::decode(&s).map_err(|e| D::Error::custom(format!("Hex decode error: {}", e)))?;
+            hex::decode(&s).map_err(|e| D::Error::custom(format!("Hex decode error: {e}")))?;
 
         // Create from bytes - we'll use MlDsa65 as default
         if bytes.len() != 1952 {
@@ -744,10 +842,14 @@ pub mod serde_wrappers {
             .map_err(|_| D::Error::custom("Failed to convert to array"))?;
 
         MlDsaPublicKey::from_bytes(MlDsaVariant::MlDsa65, &array)
-            .map_err(|e| D::Error::custom(format!("MlDsaPublicKey decode error: {:?}", e)))
+            .map_err(|e| D::Error::custom(format!("MlDsaPublicKey decode error: {e:?}")))
     }
 
-    /// Serialize DebugMlDsaSignature wrapper
+    /// Serialize `DebugMlDsaSignature` wrapper
+    ///
+    /// # Errors
+    ///
+    /// Returns a serialization error if the signature wrapper cannot be serialized.
     pub fn serialize_debug_ml_dsa_signature<S>(
         signature: &DebugMlDsaSignature,
         serializer: S,
@@ -758,7 +860,11 @@ pub mod serde_wrappers {
         serialize_ml_dsa_signature(&signature.0, serializer)
     }
 
-    /// Deserialize DebugMlDsaSignature wrapper
+    /// Deserialize `DebugMlDsaSignature` wrapper
+    ///
+    /// # Errors
+    ///
+    /// Returns a deserialization error if the signature wrapper cannot be deserialized.
     pub fn deserialize_debug_ml_dsa_signature<'de, D>(
         deserializer: D,
     ) -> std::result::Result<DebugMlDsaSignature, D::Error>
@@ -769,7 +875,11 @@ pub mod serde_wrappers {
         Ok(DebugMlDsaSignature(signature))
     }
 
-    /// Serialize DebugMlDsaPublicKey wrapper
+    /// Serialize `DebugMlDsaPublicKey` wrapper
+    ///
+    /// # Errors
+    ///
+    /// Returns a serialization error if the public key wrapper cannot be serialized.
     pub fn serialize_debug_ml_dsa_public_key<S>(
         key: &DebugMlDsaPublicKey,
         serializer: S,
@@ -780,7 +890,11 @@ pub mod serde_wrappers {
         serialize_ml_dsa_public_key(&key.0, serializer)
     }
 
-    /// Deserialize DebugMlDsaPublicKey wrapper
+    /// Deserialize `DebugMlDsaPublicKey` wrapper
+    ///
+    /// # Errors
+    ///
+    /// Returns a deserialization error if the public key wrapper cannot be deserialized.
     pub fn deserialize_debug_ml_dsa_public_key<'de, D>(
         deserializer: D,
     ) -> std::result::Result<DebugMlDsaPublicKey, D::Error>

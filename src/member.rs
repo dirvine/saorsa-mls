@@ -682,9 +682,9 @@ mod tests {
         list.add(MemberIdentity::generate(id1).unwrap());
         list.add(MemberIdentity::generate(id2).unwrap());
 
-        let ids: Vec<MemberId> = list.member_ids();
-        assert_eq!(ids.len(), 2);
-        assert!(ids.contains(&id1));
-        assert!(ids.contains(&id2));
+        let member_ids_list: Vec<MemberId> = list.member_ids();
+        assert_eq!(member_ids_list.len(), 2);
+        assert!(member_ids_list.contains(&id1));
+        assert!(member_ids_list.contains(&id2));
     }
 }

@@ -3,7 +3,12 @@
 //
 // Fixed version of group.rs that resolves deadlock issues
 
-use crate::{crypto::*, member::*, protocol::*, EpochNumber, MlsError, MlsStats, Result};
+use crate::{
+    crypto::{labels, random_bytes, AeadCipher, CipherSuite, Hash, KeySchedule},
+    member::{MemberId, MemberIdentity, MemberRegistry},
+    protocol::{ApplicationMessage, GroupInfo, ProtocolStateMachine, WelcomeMessage},
+    EpochNumber, MlsError, MlsStats, Result,
+};
 use bincode::Options;
 use dashmap::DashMap;
 use parking_lot::RwLock;
@@ -54,7 +59,7 @@ impl ReplayWindow {
 
 pub use crate::protocol::{GroupConfig, GroupId};
 
-/// MLS group state with TreeKEM key management - FIXED VERSION
+/// MLS group state with `TreeKEM` key management - FIXED VERSION
 #[derive(Debug)]
 pub struct MlsGroup {
     config: GroupConfig,
@@ -75,6 +80,10 @@ pub struct MlsGroup {
 
 impl MlsGroup {
     /// Create a new MLS group
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError` if group initialization fails.
     pub async fn new(config: GroupConfig, creator: MemberIdentity) -> Result<Self> {
         let group_id = GroupId::generate();
 
@@ -99,12 +108,16 @@ impl MlsGroup {
         };
 
         // Initialize key schedule for epoch 0
-        group.initialize_epoch_keys().await?;
+        group.initialize_epoch_keys()?;
 
         Ok(group)
     }
 
     /// Add a new member to the group - FIXED to avoid deadlock
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError` if adding the member fails or group size limit is reached.
     pub async fn add_member(&mut self, identity: &MemberIdentity) -> Result<WelcomeMessage> {
         // Scope locks to release before any await
         let (_member_id, _tree_position, should_advance) = {
@@ -150,13 +163,17 @@ impl MlsGroup {
 
         // Advance epoch if needed (separate lock scope)
         if should_advance {
-            self.advance_epoch().await?;
+            self.advance_epoch()?;
         }
 
         Ok(welcome)
     }
 
     /// Remove a member from the group - FIXED to avoid deadlock
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError` if the member is not found or removal fails.
     pub async fn remove_member(&mut self, member_id: &MemberId) -> Result<()> {
         // Scope locks to release before any await
         let should_advance = {
@@ -185,17 +202,21 @@ impl MlsGroup {
 
         // Advance epoch if needed (no locks held)
         if should_advance {
-            self.advance_epoch().await?;
+            self.advance_epoch()?;
         }
 
         Ok(())
     }
 
     /// Encrypt a message for the group - FIXED to avoid deadlock
-    pub async fn encrypt_message(&self, plaintext: &[u8]) -> Result<ApplicationMessage> {
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError` if encryption fails or key derivation fails.
+    pub fn encrypt_message(&self, plaintext: &[u8]) -> Result<ApplicationMessage> {
         // Derive per-sender application key and base nonce
         let sender_id = self.creator.id;
-        let (app_key, base_nonce) = self.get_sender_application_key_and_nonce(sender_id).await?;
+        let (app_key, base_nonce) = self.get_sender_application_key_and_nonce(sender_id)?;
 
         let cipher = AeadCipher::new(app_key, CipherSuite::default())?;
 
@@ -233,7 +254,11 @@ impl MlsGroup {
     }
 
     /// Decrypt an application message - FIXED to avoid deadlock
-    pub async fn decrypt_message(&self, message: &ApplicationMessage) -> Result<Vec<u8>> {
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError` if decryption fails, epoch mismatch, or key derivation fails.
+    pub fn decrypt_message(&self, message: &ApplicationMessage) -> Result<Vec<u8>> {
         // Verify epoch
         if message.epoch != self.current_epoch() {
             return Err(MlsError::InvalidEpoch {
@@ -243,9 +268,8 @@ impl MlsGroup {
         }
 
         // Derive per-sender key/nonce for the sender of this message
-        let (receiver_key, base_nonce) = self
-            .get_sender_application_key_and_nonce(message.sender)
-            .await?;
+        let (receiver_key, base_nonce) =
+            self.get_sender_application_key_and_nonce(message.sender)?;
         let cipher = AeadCipher::new(receiver_key, CipherSuite::default())?;
 
         // Extract nonce and ciphertext
@@ -285,12 +309,9 @@ impl MlsGroup {
     }
 
     /// Derive and cache per-sender application key and base nonce
-    async fn get_sender_application_key_and_nonce(
-        &self,
-        sender: MemberId,
-    ) -> Result<(Vec<u8>, Vec<u8>)> {
-        let key_cache = format!("application_key::{}", sender);
-        let nonce_cache = format!("application_nonce::{}", sender);
+    fn get_sender_application_key_and_nonce(&self, sender: MemberId) -> Result<(Vec<u8>, Vec<u8>)> {
+        let key_cache = format!("application_key::{sender}");
+        let nonce_cache = format!("application_nonce::{sender}");
 
         if let (Some(k), Some(n)) = (self.secrets.get(&key_cache), self.secrets.get(&nonce_cache)) {
             return Ok((k.as_bytes().to_vec(), n.as_bytes().to_vec()));
@@ -342,7 +363,7 @@ impl MlsGroup {
     }
 
     /// Advance to next epoch - FIXED to avoid deadlock
-    async fn advance_epoch(&self) -> Result<()> {
+    fn advance_epoch(&self) -> Result<()> {
         let new_epoch = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
 
         // Update protocol state with scoped lock
@@ -358,13 +379,13 @@ impl MlsGroup {
         } // Lock released
 
         // Reinitialize keys (no locks held during async operation)
-        self.initialize_epoch_keys().await?;
+        self.initialize_epoch_keys()?;
 
         Ok(())
     }
 
     /// Initialize cryptographic keys for current epoch - FIXED
-    async fn initialize_epoch_keys(&self) -> Result<()> {
+    fn initialize_epoch_keys(&self) -> Result<()> {
         // Get root secret with scoped lock
         let root_secret = {
             let tree = self.tree.read();
@@ -412,7 +433,7 @@ impl MlsGroup {
 
         for (label, secret) in labels.iter().zip(secrets.iter()) {
             self.secrets.insert(
-                label.to_string(),
+                (*label).to_string(),
                 crate::crypto::SecretBytes::from(secret.clone()),
             );
         }
@@ -435,8 +456,13 @@ impl MlsGroup {
         self.epoch.load(Ordering::SeqCst)
     }
 
+    /// Update the group epoch
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError` if epoch update fails.
     pub async fn update_epoch(&self) -> Result<()> {
-        self.advance_epoch().await
+        self.advance_epoch()
     }
 
     pub fn group_id(&self) -> GroupId {
@@ -498,7 +524,7 @@ impl MlsGroup {
         aad
     }
 
-    /// MLS-style nonce = base_nonce XOR seq (seq in 12 bytes BE)
+    /// MLS-style nonce = `base_nonce` XOR seq (seq in 12 bytes BE)
     fn xor_nonce_with_sequence(base_nonce: &[u8], sequence: u64) -> Vec<u8> {
         let mut seq_bytes = [0u8; 12];
         // Put sequence in the last 8 bytes, big-endian
@@ -511,7 +537,7 @@ impl MlsGroup {
     }
 }
 
-/// TreeKEM state for managing group key derivation
+/// `TreeKEM` state for managing group key derivation
 #[derive(Debug)]
 pub struct TreeKemState {
     /// Binary tree nodes
@@ -523,7 +549,11 @@ pub struct TreeKemState {
 }
 
 impl TreeKemState {
-    /// Create new TreeKEM state with initial member
+    /// Create new `TreeKEM` state with initial member
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError` if tree initialization fails.
     pub fn new(initial_key: Vec<u8>) -> Result<Self> {
         let root_secret = random_bytes(32);
         let mut state = Self {
@@ -539,6 +569,10 @@ impl TreeKemState {
     }
 
     /// Add a leaf node (new member)
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError` if adding the leaf fails or position is invalid.
     pub fn add_leaf(&mut self, position: usize, public_key: Vec<u8>) -> Result<()> {
         // Ensure tree capacity
         let required_size = (position + 1) * 2; // Binary tree property
@@ -550,19 +584,23 @@ impl TreeKemState {
         let leaf = TreeNode {
             public_key,
             secret: random_bytes(32),
-            parent: self.parent_index(position),
+            parent: Self::parent_index(position),
         };
 
         self.nodes[position] = Some(leaf);
         self.size = self.size.max(position + 1);
 
         // Update parent nodes up to root
-        self.update_path(position)?;
+        self.update_path(position);
 
         Ok(())
     }
 
     /// Remove a leaf node
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError` if position is invalid or removal fails.
     pub fn remove_leaf(&mut self, position: usize) -> Result<()> {
         if position >= self.nodes.len() {
             return Err(MlsError::TreeKemError("Invalid leaf position".to_string()));
@@ -571,17 +609,25 @@ impl TreeKemState {
         self.nodes[position] = None;
 
         // Update parent path
-        self.update_path(position)?;
+        self.update_path(position);
 
         Ok(())
     }
 
     /// Get the root secret for key derivation
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError` if root secret is not available.
     pub fn get_root_secret(&self) -> Result<Vec<u8>> {
         Ok(self.root_secret.clone())
     }
 
     /// Compute tree hash for integrity verification
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError` if hash computation fails.
     pub fn compute_tree_hash(&self) -> Result<Vec<u8>> {
         let hash = Hash::new(CipherSuite::default());
         let mut tree_data = Vec::new();
@@ -596,10 +642,10 @@ impl TreeKemState {
     // Private helper methods
 
     /// Update path from leaf to root
-    fn update_path(&mut self, leaf_position: usize) -> Result<()> {
+    fn update_path(&mut self, leaf_position: usize) {
         let mut current = leaf_position;
 
-        while let Some(parent_idx) = self.parent_index(current) {
+        while let Some(parent_idx) = Self::parent_index(current) {
             if parent_idx >= self.nodes.len() {
                 self.nodes.resize(parent_idx + 1, None);
             }
@@ -630,22 +676,20 @@ impl TreeKemState {
             self.nodes[parent_idx] = Some(TreeNode {
                 public_key: new_secret[..32].to_vec(), // Use hash as public key
                 secret: new_secret.clone(),
-                parent: self.parent_index(parent_idx),
+                parent: Self::parent_index(parent_idx),
             });
 
             current = parent_idx;
         }
 
         // Update root secret
-        if let Some(root_node) = &self.nodes.get(self.root_index()).and_then(|n| n.as_ref()) {
+        if let Some(root_node) = &self.nodes.get(Self::root_index()).and_then(|n| n.as_ref()) {
             self.root_secret = root_node.secret.clone();
         }
-
-        Ok(())
     }
 
     /// Get parent index for a given node
-    fn parent_index(&self, index: usize) -> Option<usize> {
+    fn parent_index(index: usize) -> Option<usize> {
         if index == 0 {
             None
         } else {
@@ -674,12 +718,12 @@ impl TreeKemState {
     }
 
     /// Get root index (always 0 for our tree)
-    fn root_index(&self) -> usize {
+    fn root_index() -> usize {
         0
     }
 }
 
-/// Node in the TreeKEM binary tree
+/// Node in the `TreeKEM` binary tree
 #[derive(Debug, Clone)]
 struct TreeNode {
     /// Public key for this node

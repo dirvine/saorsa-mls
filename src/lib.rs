@@ -16,13 +16,13 @@
 //! - **Forward secrecy** - past messages remain secure even if keys are compromised
 //! - **Post-compromise security** - the group can heal after a compromise
 //! - **Asynchronous group management** - members can join/leave without real-time coordination
-//! - **Scalable tree-based key derivation** using TreeKEM
+//! - **Scalable tree-based key derivation** using `TreeKEM`
 //!
 //! ## Core Components
 //!
 //! - `protocol`: MLS protocol message structures and state machines
 //! - `crypto`: Cryptographic primitives and key derivation
-//! - `group`: Group state management and TreeKEM operations
+//! - `group`: Group state management and `TreeKEM` operations
 //! - `member`: Member identity and authentication
 //!
 //! ## Example Usage
@@ -41,8 +41,8 @@
 //! let welcome = group.add_member(&new_member).await?;
 //!
 //! // Send encrypted messages
-//! let message = group.encrypt_message(b"Hello, secure group!").await?;
-//! let decrypted = group.decrypt_message(&message).await?;
+//! let message = group.encrypt_message(b"Hello, secure group!")?;
+//! let decrypted = group.decrypt_message(&message)?;
 //! # Ok(())
 //! # }
 //! ```
@@ -90,7 +90,7 @@ pub enum MlsError {
     #[error("Invalid epoch: expected {expected}, got {actual}")]
     InvalidEpoch { expected: u64, actual: u64 },
 
-    #[error("TreeKEM operation failed: {0}")]
+    #[error("`TreeKEM` operation failed: {0}")]
     TreeKemError(String),
 
     #[error("Invalid message: {0}")]
@@ -108,7 +108,7 @@ pub type Result<T> = std::result::Result<T, MlsError>;
 /// MLS protocol version
 pub const MLS_VERSION: u16 = 1;
 
-/// Maximum group size (TreeKEM limitation)
+/// Maximum group size (`TreeKEM` limitation)
 pub const MAX_GROUP_SIZE: usize = 65536; // 2^16
 
 /// Key rotation interval
