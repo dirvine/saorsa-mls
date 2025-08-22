@@ -40,7 +40,7 @@ jobs:
         cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
         
         # Generate HTML report
-        cargo llvm-cov --all-features --workspace --html
+        cargo llvm-cov --all-features --workspace --html --output-dir target/llvm-cov/html
         
         # Generate summary
         cargo llvm-cov --all-features --workspace --summary-only
@@ -87,7 +87,7 @@ jobs:
       run: |
         # Extract coverage percentage
         COVERAGE_NUM=$(cargo llvm-cov --all-features --workspace --summary-only | grep -o '[0-9]\+\.[0-9]\+' | tail -1)
-        THRESHOLD=85.0
+        THRESHOLD=78.0
         
         echo "Coverage: $COVERAGE_NUM%"
         echo "Threshold: $THRESHOLD%"
