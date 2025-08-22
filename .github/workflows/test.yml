@@ -25,7 +25,7 @@ jobs:
         include:
           # Test with minimum supported Rust version
           - os: ubuntu-latest
-            rust: 1.82.0  # MSRV based on dependency requirements
+            rust: 1.85.0  # MSRV based on dependency requirements
         exclude:
           # Reduce matrix size for efficiency while maintaining coverage
           - os: windows-latest
@@ -77,6 +77,7 @@ jobs:
       run: cargo test --doc --all-features
 
     - name: Run integration tests
+      shell: bash
       run: |
         if [ -d "tests" ] && [ "$(ls -A tests/*.rs 2>/dev/null)" ]; then
           cargo nextest run --test '*' --all-features
