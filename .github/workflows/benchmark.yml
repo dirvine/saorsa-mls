@@ -267,7 +267,9 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
 
     - name: Install cargo-bloat
-      uses: taiki-e/install-action@cargo-bloat
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-bloat
 
     - name: Cache cargo registry
       uses: actions/cache@v4
@@ -313,8 +315,7 @@ jobs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
 
-    - name: Install cargo-timings
-      run: cargo install cargo-timings
+    # Note: cargo-timings is not available, using built-in --timings flag instead
 
     - name: Cache cargo registry
       uses: actions/cache@v4
