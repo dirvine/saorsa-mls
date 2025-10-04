@@ -244,6 +244,50 @@ impl Credential {
             }
         }
     }
+
+    /// Create a new certificate-based credential (TODO: implement)
+    pub fn new_certificate(cert_data: Vec<u8>) -> Result<Self> {
+        // TODO: Parse and validate X.509 certificate with ML-DSA
+        // For now, create basic Certificate credential
+        Ok(Self::Certificate {
+            credential_type: CredentialType::Certificate,
+            cert_data,
+        })
+    }
+
+    /// Create a new certificate credential with full chain (TODO: implement)
+    pub fn new_certificate_chain(chain: Vec<Vec<u8>>) -> Result<Self> {
+        // TODO: Validate certificate chain
+        if chain.is_empty() {
+            return Err(MlsError::InvalidGroupState(
+                "Empty certificate chain".to_string()
+            ));
+        }
+        // For now, just use the leaf certificate
+        Self::new_certificate(chain[0].clone())
+    }
+
+    /// Verify certificate chain up to trust store (TODO: implement)
+    pub fn verify_chain(&self, _trust_store: &crate::TrustStore) -> Result<bool> {
+        // TODO: Implement full certificate chain validation
+        // - Parse X.509 certificates
+        // - Verify signatures up to root
+        // - Check validity periods
+        // - Check revocation (CRL/OCSP)
+        match self {
+            Self::Certificate { .. } => {
+                // Stub: would do full chain validation
+                Err(MlsError::CryptoError(
+                    "Certificate chain validation not yet implemented".to_string()
+                ))
+            }
+            Self::Basic { .. } => {
+                Err(MlsError::InvalidGroupState(
+                    "Basic credentials don't have certificate chains".to_string()
+                ))
+            }
+        }
+    }
 }
 
 /// Key package containing public keys and credentials
@@ -614,6 +658,51 @@ impl MemberRegistry {
 impl Default for MemberRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Trust store for managing root certificates and CRLs
+/// TODO: Implement full X.509 trust store with CRL support
+#[derive(Debug, Clone, Default)]
+pub struct TrustStore {
+    /// Root certificates (trusted anchors)
+    pub roots: Vec<Vec<u8>>,
+    /// Certificate Revocation Lists
+    pub crls: Vec<Vec<u8>>,
+}
+
+impl TrustStore {
+    /// Create a new empty trust store
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a root certificate to the trust store
+    pub fn add_root_certificate(&mut self, cert: Vec<u8>) {
+        self.roots.push(cert);
+    }
+
+    /// Remove a root certificate by fingerprint
+    pub fn remove_root_certificate(&mut self, fingerprint: &[u8]) {
+        // TODO: Implement proper fingerprint matching
+        // For now, remove by exact match
+        self.roots.retain(|cert| cert.as_slice() != fingerprint);
+    }
+
+    /// Add a CRL to the trust store
+    pub fn add_crl(&mut self, crl: Vec<u8>) {
+        self.crls.push(crl);
+    }
+
+    /// Get number of root certificates
+    pub fn root_count(&self) -> usize {
+        self.roots.len()
+    }
+
+    /// Calculate certificate fingerprint (TODO: implement proper hashing)
+    pub fn fingerprint(cert: &[u8]) -> Vec<u8> {
+        // TODO: Use proper cryptographic hash (SHA-256)
+        cert.to_vec()
     }
 }
 

@@ -66,7 +66,7 @@ pub use crypto::{
     MlsHash, MlsKem, MlsSignature,
 };
 pub use group::{GroupConfig, GroupId, GroupState, MlsGroup};
-pub use member::{Credential, GroupMember, KeyPackage, MemberId, MemberIdentity, MemberState};
+pub use member::{Credential, CredentialType, GroupMember, KeyPackage, MemberId, MemberIdentity, MemberState, TrustStore};
 pub use protocol::*;
 
 /// Errors that can occur in MLS operations
