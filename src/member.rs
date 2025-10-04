@@ -276,8 +276,21 @@ impl Credential {
 
     /// Create a new certificate-based credential (TODO: implement)
     pub fn new_certificate(cert_data: Vec<u8>) -> Result<Self> {
+        // Validate input
+        if cert_data.is_empty() {
+            return Err(MlsError::InvalidGroupState(
+                "Certificate data cannot be empty".to_string()
+            ));
+        }
+
         // TODO: Parse and validate X.509 certificate with ML-DSA
-        // For now, create basic Certificate credential
+        // For now, basic validation of certificate structure
+        if cert_data.len() < 64 {
+            return Err(MlsError::InvalidGroupState(
+                "Certificate data too small to be valid".to_string()
+            ));
+        }
+
         Ok(Self::Certificate {
             credential_type: CredentialType::Certificate,
             cert_data,
