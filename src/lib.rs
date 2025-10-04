@@ -50,12 +50,21 @@
 use std::time::Duration;
 use thiserror::Error;
 
+pub mod api;
 pub mod crypto;
 pub mod group;
 pub mod member;
 pub mod protocol;
+pub mod quic_integration;
 
-pub use crypto::{AeadCipher, CipherSuite, Hash, KeyPair, KeySchedule};
+pub use api::{
+    add_member, group_new, group_new_with_config, recv, remove_member, send, Ciphertext,
+    CommitOptions, GroupId as SimpleGroupId, Identity,
+};
+pub use crypto::{
+    AeadCipher, CipherSuite, CipherSuiteId, Hash, HpkeContext, KeyPair, KeySchedule, MlsAead,
+    MlsHash, MlsKem, MlsSignature,
+};
 pub use group::{GroupConfig, GroupId, GroupState, MlsGroup};
 pub use member::{Credential, GroupMember, KeyPackage, MemberId, MemberIdentity, MemberState};
 pub use protocol::*;

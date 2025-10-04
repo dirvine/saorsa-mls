@@ -5,10 +5,11 @@ use crate::{
     MlsError, Result,
 };
 use bincode::Options;
-use saorsa_pqc::api::{MlDsaPublicKey, MlDsaSignature};
+use saorsa_pqc::api::{MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature, MlKemSecretKey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
@@ -40,18 +41,64 @@ impl fmt::Display for MemberId {
 }
 
 /// Identity information for a group member
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct MemberIdentity {
     pub id: MemberId,
     pub name: Option<String>,
     pub credential: Credential,
     pub key_package: KeyPackage,
+    #[serde(skip)]
+    signing_key: Option<Arc<MlDsaSecretKey>>,
+    #[serde(skip)]
+    kem_secret: Option<Arc<MlKemSecretKey>>,
+}
+
+impl Clone for MemberIdentity {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            name: self.name.clone(),
+            credential: self.credential.clone(),
+            key_package: self.key_package.clone(),
+            signing_key: self.signing_key.clone(),
+            kem_secret: self.kem_secret.clone(),
+        }
+    }
+}
+
+impl PartialEq for MemberIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.name == other.name
+            && self.credential == other.credential
+            && self.key_package == other.key_package
+    }
+}
+
+impl Eq for MemberIdentity {}
+
+impl fmt::Debug for MemberIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MemberIdentity")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("credential", &self.credential)
+            .field("key_package", &self.key_package)
+            .finish_non_exhaustive()
+    }
 }
 
 impl MemberIdentity {
     /// Create a new member identity
     pub fn generate(id: MemberId) -> Result<Self> {
-        let keypair = KeyPair::generate(CipherSuite::default());
+        Self::generate_with_suite(id, CipherSuite::default())
+    }
+
+    /// Create a new member identity using the provided cipher suite
+    pub fn generate_with_suite(id: MemberId, suite: CipherSuite) -> Result<Self> {
+        let keypair = KeyPair::generate(suite);
+        let signing_key = Arc::new(keypair.signing_key.clone());
+        let kem_secret = Arc::new(keypair.kem_secret.clone());
         let credential = Credential::new_basic(id, None, &keypair, keypair.suite)?;
         let key_package = KeyPackage::new(keypair, credential.clone())?;
 
@@ -60,6 +107,8 @@ impl MemberIdentity {
             name: None,
             credential,
             key_package,
+            signing_key: Some(signing_key),
+            kem_secret: Some(kem_secret),
         })
     }
 
@@ -68,13 +117,16 @@ impl MemberIdentity {
         let id = MemberId::generate();
         let mut identity = Self::generate(id)?;
 
-        // Update credential with name
+        // Update credential with name using the existing cipher suite
         let suite = identity.key_package.cipher_suite;
-        // We do not have the signing key here; regenerate fresh keys and key package
         let keypair = KeyPair::generate(suite);
+        let signing_key = Arc::new(keypair.signing_key.clone());
+        let kem_secret = Arc::new(keypair.kem_secret.clone());
         identity.name = Some(name.clone());
         identity.credential = Credential::new_basic(id, Some(name), &keypair, suite)?;
         identity.key_package = KeyPackage::new(keypair, identity.credential.clone())?;
+        identity.signing_key = Some(signing_key);
+        identity.kem_secret = Some(kem_secret);
 
         Ok(identity)
     }
@@ -82,6 +134,16 @@ impl MemberIdentity {
     /// Get the member's cipher suite
     pub fn cipher_suite(&self) -> CipherSuite {
         self.key_package.cipher_suite
+    }
+
+    /// Get a reference to the signing key if available
+    pub fn signing_key(&self) -> Option<&MlDsaSecretKey> {
+        self.signing_key.as_deref()
+    }
+
+    /// Get a reference to the KEM secret if available
+    pub fn kem_secret(&self) -> Option<&MlKemSecretKey> {
+        self.kem_secret.as_deref()
     }
 
     /// Verify this identity's signature on data
@@ -165,7 +227,7 @@ impl Credential {
     }
 
     /// Verify the credential is valid
-    pub fn verify(&self, verifying_key: &MlDsaPublicKey) -> bool {
+    pub fn verify(&self, verifying_key: &MlDsaPublicKey, suite: CipherSuite) -> bool {
         match self {
             Self::Basic {
                 identity,
@@ -173,7 +235,7 @@ impl Credential {
                 ..
             } => {
                 use saorsa_pqc::api::MlDsa;
-                let ml_dsa = MlDsa::new(saorsa_pqc::api::MlDsaVariant::MlDsa65);
+                let ml_dsa = MlDsa::new(suite.ml_dsa_variant());
                 ml_dsa.verify(verifying_key, identity, &signature.0).is_ok()
             }
             Self::Certificate { .. } => {
@@ -207,7 +269,7 @@ impl KeyPackage {
     /// Create a new key package
     pub fn new(keypair: KeyPair, credential: Credential) -> Result<Self> {
         // Verify the credential against the provided verifying key
-        if !credential.verify(keypair.verifying_key()) {
+        if !credential.verify(keypair.verifying_key(), keypair.suite) {
             return Err(MlsError::InvalidGroupState(
                 "invalid credential signature".to_string(),
             ));
@@ -608,7 +670,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(credential.verify(keypair.verifying_key()));
+        assert!(credential.verify(keypair.verifying_key(), keypair.suite));
     }
 
     #[test]

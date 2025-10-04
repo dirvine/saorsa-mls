@@ -8,66 +8,229 @@
 
 use crate::{MlsError, Result};
 use saorsa_pqc::api::{
+    hpke::{HpkeConfig, HpkeContext as PqcHpkeContext, HpkeRecipient, HpkeSender},
+    kdf::KdfAlgorithm,
     MlDsa, MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature, MlDsaVariant, MlKem, MlKemCiphertext,
     MlKemPublicKey, MlKemSecretKey, MlKemSharedSecret, MlKemVariant,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// Supported cipher suites for MLS with post-quantum algorithms
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CipherSuite {
-    /// ML-KEM-768 + ML-DSA-65 (NIST Level 3 security)
-    MlKem768MlDsa65,
-    /// ML-KEM-1024 + ML-DSA-87 (NIST Level 5 security)
-    MlKem1024MlDsa87,
-    /// Hybrid mode with classical and PQC algorithms
-    HybridClassicalPqc,
+/// Registry identifier for Saorsa MLS PQC cipher suites (private-use values).
+#[allow(non_camel_case_types)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(u16)]
+pub enum CipherSuiteId {
+    /// MLS_128_MLKEM768_AES128GCM_SHA256_MLDSA65
+    MLS_128_MLKEM768_AES128GCM_SHA256_MLDSA65 = 0x0A01,
+    /// MLS_128_HYBRID_X25519+MLKEM768_AES128GCM_SHA256_MLDSA65
+    MLS_128_HYBRID_X25519_MLKEM768_AES128GCM_SHA256_MLDSA65 = 0x0A02,
+    /// MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87
+    MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87 = 0x0A03,
+    /// MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65 (transitional default)
+    MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65 = 0x0A04,
+}
+
+impl CipherSuiteId {
+    #[must_use]
+    pub const fn as_u16(self) -> u16 {
+        self as u16
+    }
+}
+
+/// Supported post-quantum / hybrid KEM choices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MlsKem {
+    MlKem512,
+    MlKem768,
+    MlKem1024,
+    HybridX25519MlKem768,
+}
+
+/// Supported signature schemes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MlsSignature {
+    MlDsa44,
+    MlDsa65,
+    MlDsa87,
+    SlhDsa128,
+    SlhDsa192,
+    SlhDsa256,
+}
+
+/// Supported AEAD algorithms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MlsAead {
+    Aes128Gcm,
+    Aes256Gcm,
+    ChaCha20Poly1305,
+}
+
+/// Supported hash algorithms per ciphersuite definition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MlsHash {
+    Sha256,
+    Sha512,
+    Blake3,
+    Sha3_256,
+    Sha3_512,
+}
+
+/// Saorsa MLS cipher suite descriptor binding KEM, signature, AEAD, and hash choices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CipherSuite {
+    id: CipherSuiteId,
+    kem: MlsKem,
+    signature: MlsSignature,
+    aead: MlsAead,
+    hash: MlsHash,
+}
+
+impl CipherSuite {
+    pub const fn new(
+        id: CipherSuiteId,
+        kem: MlsKem,
+        signature: MlsSignature,
+        aead: MlsAead,
+        hash: MlsHash,
+    ) -> Self {
+        Self {
+            id,
+            kem,
+            signature,
+            aead,
+            hash,
+        }
+    }
+
+    #[must_use]
+    pub const fn id(&self) -> CipherSuiteId {
+        self.id
+    }
+
+    #[must_use]
+    pub const fn kem(&self) -> MlsKem {
+        self.kem
+    }
+
+    #[must_use]
+    pub const fn signature(&self) -> MlsSignature {
+        self.signature
+    }
+
+    #[must_use]
+    pub const fn aead(&self) -> MlsAead {
+        self.aead
+    }
+
+    #[must_use]
+    pub const fn hash(&self) -> MlsHash {
+        self.hash
+    }
+
+    #[must_use]
+    pub fn from_id(id: CipherSuiteId) -> Option<Self> {
+        REGISTRY.iter().copied().find(|suite| suite.id == id)
+    }
+
+    #[must_use]
+    pub fn all() -> &'static [CipherSuite] {
+        &REGISTRY
+    }
+
+    /// Get the ML-KEM variant for this cipher suite.
+    #[must_use]
+    pub fn ml_kem_variant(&self) -> MlKemVariant {
+        match self.kem {
+            MlsKem::MlKem512 => MlKemVariant::MlKem512,
+            MlsKem::MlKem768 | MlsKem::HybridX25519MlKem768 => MlKemVariant::MlKem768,
+            MlsKem::MlKem1024 => MlKemVariant::MlKem1024,
+        }
+    }
+
+    /// Get the ML-DSA variant for this cipher suite.
+    #[must_use]
+    pub fn ml_dsa_variant(&self) -> MlDsaVariant {
+        match self.signature {
+            MlsSignature::MlDsa44 => MlDsaVariant::MlDsa44,
+            MlsSignature::MlDsa65 | MlsSignature::SlhDsa128 | MlsSignature::SlhDsa192 => {
+                MlDsaVariant::MlDsa65
+            }
+            MlsSignature::MlDsa87 | MlsSignature::SlhDsa256 => MlDsaVariant::MlDsa87,
+        }
+    }
+
+    /// Get the key size for symmetric encryption.
+    #[must_use]
+    pub fn key_size(&self) -> usize {
+        match self.aead {
+            MlsAead::Aes128Gcm => 16,
+            MlsAead::Aes256Gcm | MlsAead::ChaCha20Poly1305 => 32,
+        }
+    }
+
+    /// Get the nonce size for AEAD.
+    #[must_use]
+    pub fn nonce_size(&self) -> usize {
+        12
+    }
+
+    /// Get the hash output size used for HKDF and transcript hashing.
+    #[must_use]
+    pub fn hash_size(&self) -> usize {
+        match self.hash {
+            MlsHash::Sha256 => 32,
+            MlsHash::Sha512 => 64,
+            MlsHash::Blake3 => 32,
+            MlsHash::Sha3_256 => 32,
+            MlsHash::Sha3_512 => 64,
+        }
+    }
 }
 
 impl Default for CipherSuite {
     fn default() -> Self {
-        Self::MlKem768MlDsa65
+        // Transitional default until AES128GCM path is fully integrated.
+        CipherSuite::new(
+            CipherSuiteId::MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65,
+            MlsKem::MlKem768,
+            MlsSignature::MlDsa65,
+            MlsAead::ChaCha20Poly1305,
+            MlsHash::Sha256,
+        )
     }
 }
 
-impl CipherSuite {
-    /// Get the ML-KEM variant for this cipher suite
-    #[must_use]
-    pub fn ml_kem_variant(&self) -> MlKemVariant {
-        match self {
-            Self::MlKem768MlDsa65 | Self::HybridClassicalPqc => MlKemVariant::MlKem768,
-            Self::MlKem1024MlDsa87 => MlKemVariant::MlKem1024,
-        }
-    }
-
-    /// Get the ML-DSA variant for this cipher suite
-    #[must_use]
-    pub fn ml_dsa_variant(&self) -> MlDsaVariant {
-        match self {
-            Self::MlKem768MlDsa65 | Self::HybridClassicalPqc => MlDsaVariant::MlDsa65,
-            Self::MlKem1024MlDsa87 => MlDsaVariant::MlDsa87,
-        }
-    }
-
-    /// Get the key size for symmetric encryption
-    #[must_use]
-    pub fn key_size(&self) -> usize {
-        32 // ChaCha20Poly1305 uses 256-bit keys
-    }
-
-    /// Get the nonce size for AEAD
-    #[must_use]
-    pub fn nonce_size(&self) -> usize {
-        12 // ChaCha20Poly1305 uses 96-bit nonces
-    }
-
-    /// Get the hash output size
-    #[must_use]
-    pub fn hash_size(&self) -> usize {
-        32 // BLAKE3 default output
-    }
-}
+const REGISTRY: [CipherSuite; 4] = [
+    CipherSuite::new(
+        CipherSuiteId::MLS_128_MLKEM768_AES128GCM_SHA256_MLDSA65,
+        MlsKem::MlKem768,
+        MlsSignature::MlDsa65,
+        MlsAead::Aes128Gcm,
+        MlsHash::Sha256,
+    ),
+    CipherSuite::new(
+        CipherSuiteId::MLS_128_HYBRID_X25519_MLKEM768_AES128GCM_SHA256_MLDSA65,
+        MlsKem::HybridX25519MlKem768,
+        MlsSignature::MlDsa65,
+        MlsAead::Aes128Gcm,
+        MlsHash::Sha256,
+    ),
+    CipherSuite::new(
+        CipherSuiteId::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87,
+        MlsKem::MlKem1024,
+        MlsSignature::MlDsa87,
+        MlsAead::Aes256Gcm,
+        MlsHash::Sha512,
+    ),
+    CipherSuite::new(
+        CipherSuiteId::MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65,
+        MlsKem::MlKem768,
+        MlsSignature::MlDsa65,
+        MlsAead::ChaCha20Poly1305,
+        MlsHash::Sha256,
+    ),
+];
 
 /// Cryptographic operations using saorsa-pqc as the single source of truth
 pub struct Hash {
@@ -525,6 +688,178 @@ impl From<Vec<u8>> for SecretBytes {
     }
 }
 
+/// HPKE context for encryption/decryption operations
+///
+/// Wraps saorsa-pqc's HPKE context and provides MLS-specific interface
+pub struct HpkeContext {
+    inner: PqcHpkeContext,
+}
+
+impl HpkeContext {
+    /// Export secret material for key derivation
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if the export operation fails
+    pub fn export(&mut self, context: &[u8], length: usize) -> Result<Vec<u8>> {
+        self.inner
+            .export(context, length)
+            .map_err(|e| MlsError::CryptoError(format!("HPKE export failed: {e:?}")))
+    }
+
+    /// Seal (encrypt) plaintext with associated data
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if encryption fails
+    pub fn seal(&mut self, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+        self.inner
+            .seal(plaintext, aad)
+            .map_err(|e| MlsError::CryptoError(format!("HPKE seal failed: {e:?}")))
+    }
+
+    /// Open (decrypt) ciphertext with associated data
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if decryption or authentication fails
+    pub fn open(&mut self, ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+        self.inner
+            .open(ciphertext, aad)
+            .map_err(|e| MlsError::CryptoError(format!("HPKE open failed: {e:?}")))
+    }
+}
+
+impl CipherSuite {
+    /// Get HPKE configuration for this ciphersuite
+    fn hpke_config(&self) -> HpkeConfig {
+        HpkeConfig {
+            kem: self.ml_kem_variant(),
+            kdf: match self.hash {
+                MlsHash::Sha256 | MlsHash::Sha3_256 => KdfAlgorithm::HkdfSha3_256,
+                MlsHash::Sha512 | MlsHash::Sha3_512 => KdfAlgorithm::HkdfSha3_512,
+                MlsHash::Blake3 => KdfAlgorithm::HkdfSha3_256, // Default to SHA3-256
+            },
+            aead: match self.aead {
+                MlsAead::ChaCha20Poly1305 => saorsa_pqc::api::aead::AeadCipher::ChaCha20Poly1305,
+                // Note: saorsa-pqc only has AES256GCM, using it for both AES128 and AES256
+                MlsAead::Aes128Gcm | MlsAead::Aes256Gcm => {
+                    saorsa_pqc::api::aead::AeadCipher::Aes256Gcm
+                }
+            },
+        }
+    }
+
+    /// Single-shot HPKE seal operation
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if HPKE setup or encryption fails
+    pub fn hpke_seal(
+        &self,
+        recipient_public_key: &MlKemPublicKey,
+        plaintext: &[u8],
+        aad: &[u8],
+        info: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
+        let config = self.hpke_config();
+        let sender = HpkeSender::new(config);
+
+        // Convert public key to bytes
+        let pk_bytes = recipient_public_key.to_bytes();
+
+        // Setup and get context
+        let (encapped_key, mut ctx) = sender
+            .setup_base(&pk_bytes, info)
+            .map_err(|e| MlsError::CryptoError(format!("HPKE setup failed: {e:?}")))?;
+
+        // Seal the plaintext
+        let ciphertext = ctx
+            .seal(plaintext, aad)
+            .map_err(|e| MlsError::CryptoError(format!("HPKE seal failed: {e:?}")))?;
+
+        Ok((encapped_key, ciphertext))
+    }
+
+    /// Setup HPKE sender context
+    ///
+    /// Returns encapsulated key and sender context for multiple encryptions
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if HPKE setup fails
+    pub fn hpke_setup_sender(
+        &self,
+        recipient_public_key: &MlKemPublicKey,
+        info: &[u8],
+    ) -> Result<(Vec<u8>, HpkeContext)> {
+        let config = self.hpke_config();
+        let sender = HpkeSender::new(config);
+
+        let pk_bytes = recipient_public_key.to_bytes();
+
+        let (encapped_key, ctx) = sender
+            .setup_base(&pk_bytes, info)
+            .map_err(|e| MlsError::CryptoError(format!("HPKE sender setup failed: {e:?}")))?;
+
+        Ok((encapped_key, HpkeContext { inner: ctx }))
+    }
+}
+
+impl KeyPair {
+    /// Single-shot HPKE open operation
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if HPKE setup or decryption fails
+    pub fn hpke_open(
+        &self,
+        encapped_key: &[u8],
+        ciphertext: &[u8],
+        aad: &[u8],
+        info: &[u8],
+    ) -> Result<Vec<u8>> {
+        let mut ctx = self.hpke_setup_receiver(encapped_key, info)?;
+        ctx.open(ciphertext, aad)
+    }
+
+    /// Setup HPKE receiver context
+    ///
+    /// Returns receiver context for multiple decryptions
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if HPKE setup fails
+    pub fn hpke_setup_receiver(&self, encapped_key: &[u8], info: &[u8]) -> Result<HpkeContext> {
+        let config = HpkeConfig {
+            kem: self.suite.ml_kem_variant(),
+            kdf: match self.suite.hash {
+                MlsHash::Sha256 | MlsHash::Sha3_256 => KdfAlgorithm::HkdfSha3_256,
+                MlsHash::Sha512 | MlsHash::Sha3_512 => KdfAlgorithm::HkdfSha3_512,
+                MlsHash::Blake3 => KdfAlgorithm::HkdfSha3_256,
+            },
+            aead: match self.suite.aead {
+                MlsAead::ChaCha20Poly1305 => saorsa_pqc::api::aead::AeadCipher::ChaCha20Poly1305,
+                // Note: saorsa-pqc only has AES256GCM, using it for both AES128 and AES256
+                MlsAead::Aes128Gcm | MlsAead::Aes256Gcm => {
+                    saorsa_pqc::api::aead::AeadCipher::Aes256Gcm
+                }
+            },
+        };
+
+        let recipient = HpkeRecipient::new(config);
+
+        // Convert secret key to bytes
+        let sk_bytes = self.kem_secret.to_bytes();
+
+        let ctx = recipient
+            .setup_base(encapped_key, &sk_bytes, info)
+            .map_err(|e| MlsError::CryptoError(format!("HPKE recipient setup failed: {e:?}")))?;
+
+        Ok(HpkeContext { inner: ctx })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -532,7 +867,10 @@ mod tests {
     #[test]
     fn test_cipher_suite_defaults() {
         let suite = CipherSuite::default();
-        assert_eq!(suite, CipherSuite::MlKem768MlDsa65);
+        assert_eq!(
+            suite.id(),
+            CipherSuiteId::MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65
+        );
         assert_eq!(suite.key_size(), 32);
         assert_eq!(suite.nonce_size(), 12);
     }

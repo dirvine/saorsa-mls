@@ -6,12 +6,15 @@
 use crate::{
     crypto::{labels, random_bytes, AeadCipher, CipherSuite, Hash, KeySchedule},
     member::{MemberId, MemberIdentity, MemberRegistry},
-    protocol::{ApplicationMessage, GroupInfo, ProtocolStateMachine, WelcomeMessage},
+    protocol::{
+        ApplicationMessage, EncryptedGroupSecrets, GroupInfo, ProtocolStateMachine, WelcomeMessage,
+    },
     EpochNumber, MlsError, MlsStats, Result,
 };
 use bincode::Options;
 use dashmap::DashMap;
 use parking_lot::RwLock;
+use saorsa_pqc::api::{MlDsa, MlKem};
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -76,6 +79,7 @@ pub struct MlsGroup {
     secrets: Arc<DashMap<String, crate::crypto::SecretBytes>>,
     // Per-sender replay windows
     recv_windows: Arc<DashMap<MemberId, ReplayWindow>>,
+    cipher_suite: CipherSuite,
 }
 
 impl MlsGroup {
@@ -86,11 +90,23 @@ impl MlsGroup {
     /// Returns `MlsError` if group initialization fails.
     pub async fn new(config: GroupConfig, creator: MemberIdentity) -> Result<Self> {
         let group_id = GroupId::generate();
+        let cipher_suite = CipherSuite::from_id(config.cipher_suite).ok_or_else(|| {
+            MlsError::InvalidGroupState(format!(
+                "unsupported cipher suite 0x{:04X}",
+                config.cipher_suite.as_u16()
+            ))
+        })?;
+
+        if creator.cipher_suite() != cipher_suite {
+            return Err(MlsError::InvalidGroupState(
+                "creator identity does not match group cipher suite".to_string(),
+            ));
+        }
 
         let mut members = MemberRegistry::new();
         members.add_member(creator.clone())?;
 
-        let tree = TreeKemState::new(creator.key_package.agreement_key.clone())?;
+        let tree = TreeKemState::new(creator.key_package.agreement_key.clone(), cipher_suite)?;
 
         let group = Self {
             config,
@@ -105,6 +121,7 @@ impl MlsGroup {
             stats: Arc::new(RwLock::new(MlsStats::default())),
             secrets: Arc::new(DashMap::new()),
             recv_windows: Arc::new(DashMap::new()),
+            cipher_suite,
         };
 
         // Initialize key schedule for epoch 0
@@ -119,6 +136,12 @@ impl MlsGroup {
     ///
     /// Returns `MlsError` if adding the member fails or group size limit is reached.
     pub async fn add_member(&mut self, identity: &MemberIdentity) -> Result<WelcomeMessage> {
+        if identity.cipher_suite() != self.cipher_suite {
+            return Err(MlsError::InvalidGroupState(
+                "member identity does not match group cipher suite".to_string(),
+            ));
+        }
+
         // Scope locks to release before any await
         let (_member_id, _tree_position, should_advance) = {
             let mut members = self.members.write();
@@ -147,24 +170,73 @@ impl MlsGroup {
             (member_id, tree_position, true)
         }; // All locks released here
 
-        // Create welcome message (no locks held)
-        let welcome = WelcomeMessage {
-            epoch: self.current_epoch(),
-            sender: self.creator.id,
-            cipher_suite: CipherSuite::default(),
-            group_info: {
-                let opts = bincode::DefaultOptions::new().with_limit(1_048_576);
-                opts.serialize(&self.create_group_info()?)
-                    .map_err(|e| MlsError::SerializationError(e.to_string()))?
-            },
-            secrets: vec![], // Simplified for now
-            signature: self.creator.key_package.signature.clone(),
-        };
-
-        // Advance epoch if needed (separate lock scope)
         if should_advance {
             self.advance_epoch()?;
         }
+
+        // Encapsulate path secret for the new member using ML-KEM
+        let kem_public = saorsa_pqc::api::MlKemPublicKey::from_bytes(
+            self.cipher_suite.ml_kem_variant(),
+            &identity.key_package.agreement_key,
+        )
+        .map_err(|e| MlsError::CryptoError(format!("Invalid KEM public key: {e:?}")))?;
+
+        if should_advance {
+            self.advance_epoch()?;
+        }
+
+        let application_secret_bytes = self
+            .secrets
+            .get(labels::APPLICATION)
+            .ok_or_else(|| {
+                MlsError::KeyDerivationError("Application secret not found".to_string())
+            })?
+            .as_bytes()
+            .to_vec();
+
+        let ml_kem = MlKem::new(self.cipher_suite.ml_kem_variant());
+        let (shared_secret, ciphertext) = ml_kem
+            .encapsulate(&kem_public)
+            .map_err(|e| MlsError::CryptoError(format!("Encapsulation failed: {e:?}")))?;
+
+        // Create welcome message (no locks held)
+        let group_info = self.create_group_info()?;
+        let group_info_bytes = {
+            let opts = bincode::DefaultOptions::new().with_limit(1_048_576);
+            opts.serialize(&group_info)
+                .map_err(|e| MlsError::SerializationError(e.to_string()))?
+        };
+
+        let signing_key = self
+            .creator
+            .signing_key()
+            .ok_or_else(|| MlsError::InvalidGroupState("missing signing key".to_string()))?;
+        let ml_dsa = MlDsa::new(self.cipher_suite.ml_dsa_variant());
+        let signature = ml_dsa
+            .sign(signing_key, &group_info_bytes)
+            .map_err(|e| MlsError::CryptoError(format!("Signing failed: {e:?}")))?;
+
+        let shared_bytes = shared_secret.to_bytes();
+        let encrypted_path_secret = EncryptedGroupSecrets::encrypt_for_recipient(
+            self.cipher_suite,
+            &shared_bytes,
+            &application_secret_bytes,
+        )?;
+
+        let welcome_secrets = vec![EncryptedGroupSecrets {
+            recipient_key_package_hash: identity.key_package.agreement_key.clone(),
+            kem_ciphertext: ciphertext.to_bytes(),
+            encrypted_path_secret,
+        }];
+
+        let welcome = WelcomeMessage {
+            epoch: self.current_epoch(),
+            sender: self.creator.id,
+            cipher_suite: self.cipher_suite,
+            group_info: group_info_bytes,
+            secrets: welcome_secrets,
+            signature: crate::crypto::DebugMlDsaSignature(signature),
+        };
 
         Ok(welcome)
     }
@@ -218,7 +290,7 @@ impl MlsGroup {
         let sender_id = self.creator.id;
         let (app_key, base_nonce) = self.get_sender_application_key_and_nonce(sender_id)?;
 
-        let cipher = AeadCipher::new(app_key, CipherSuite::default())?;
+        let cipher = AeadCipher::new(app_key, self.cipher_suite)?;
 
         // Per-sender sequence number
         let sequence = self
@@ -235,13 +307,23 @@ impl MlsGroup {
         let mut wire_ciphertext = nonce;
         wire_ciphertext.extend_from_slice(&ciphertext);
 
+        // Sign the ciphertext using the creator's signing key
+        let signing_key = self
+            .creator
+            .signing_key()
+            .ok_or_else(|| MlsError::InvalidGroupState("missing signing key".to_string()))?;
+        let ml_dsa = MlDsa::new(self.cipher_suite.ml_dsa_variant());
+        let signature = ml_dsa
+            .sign(signing_key, &wire_ciphertext)
+            .map_err(|e| MlsError::CryptoError(format!("Signing failed: {e:?}")))?;
+
         let message = ApplicationMessage {
             epoch: self.current_epoch(),
             sender: self.creator.id,
             generation: 0, // Simplified
             sequence,
             ciphertext: wire_ciphertext,
-            signature: self.creator.key_package.signature.clone(),
+            signature: crate::crypto::DebugMlDsaSignature(signature),
         };
 
         // Update statistics with scoped lock
@@ -270,10 +352,29 @@ impl MlsGroup {
         // Derive per-sender key/nonce for the sender of this message
         let (receiver_key, base_nonce) =
             self.get_sender_application_key_and_nonce(message.sender)?;
-        let cipher = AeadCipher::new(receiver_key, CipherSuite::default())?;
+        let cipher = AeadCipher::new(receiver_key, self.cipher_suite)?;
+
+        // Verify the message signature before decryption
+        let verifying_key = {
+            let members = self.members.read();
+            let index = members
+                .find_member_index(&message.sender)
+                .ok_or(MlsError::MemberNotFound(message.sender))?;
+            let member = members
+                .get_member(index)
+                .ok_or(MlsError::MemberNotFound(message.sender))?;
+            member.identity.key_package.verifying_key.0.clone()
+        };
+        let ml_dsa = MlDsa::new(self.cipher_suite.ml_dsa_variant());
+        let signature_valid = ml_dsa
+            .verify(&verifying_key, &message.ciphertext, &message.signature.0)
+            .map_err(|e| MlsError::InvalidMessage(format!("invalid signature: {e:?}")))?;
+        if !signature_valid {
+            return Err(MlsError::InvalidMessage("invalid signature".to_string()));
+        }
 
         // Extract nonce and ciphertext
-        let nonce_size = CipherSuite::default().nonce_size();
+        let nonce_size = self.cipher_suite.nonce_size();
         if message.ciphertext.len() < nonce_size {
             return Err(MlsError::DecryptionFailed);
         }
@@ -328,7 +429,7 @@ impl MlsGroup {
             .to_vec();
 
         // Create a fresh key schedule instead of accessing the stored one
-        let key_schedule = KeySchedule::new(CipherSuite::default());
+        let key_schedule = KeySchedule::new(self.cipher_suite);
 
         // Derive per-sender key and base nonce using HKDF labels
         let mut info_key = Vec::new();
@@ -338,7 +439,7 @@ impl MlsGroup {
             &self.current_epoch().to_be_bytes(),
             &app_secret,
             &info_key,
-            32,
+            self.cipher_suite.key_size(),
         )?;
 
         let mut info_nonce = Vec::new();
@@ -348,7 +449,7 @@ impl MlsGroup {
             &self.current_epoch().to_be_bytes(),
             &app_secret,
             &info_nonce,
-            CipherSuite::default().nonce_size(),
+            self.cipher_suite.nonce_size(),
         )?;
 
         // Cache
@@ -392,28 +493,25 @@ impl MlsGroup {
             tree.get_root_secret()?
         }; // Lock released
 
-        let ks = KeySchedule::new(CipherSuite::default());
+        let ks = KeySchedule::new(self.cipher_suite);
         let epoch_bytes = self.current_epoch().to_be_bytes();
 
         // Derive epoch-specific secrets (no locks held)
-        let secrets = ks.derive_keys(
-            &epoch_bytes,
-            &root_secret,
-            &[
-                labels::EPOCH_SECRET,
-                labels::SENDER_DATA_SECRET,
-                labels::HANDSHAKE_SECRET,
-                labels::APPLICATION_SECRET,
-                labels::EXPORTER_SECRET,
-                labels::AUTHENTICATION_SECRET,
-                labels::EXTERNAL_SECRET,
-                labels::CONFIRMATION_KEY,
-                labels::MEMBERSHIP_KEY,
-                labels::RESUMPTION_PSK,
-                labels::INIT_SECRET,
-            ],
-            &[32; 11],
-        )?;
+        let derive_labels = [
+            labels::EPOCH_SECRET,
+            labels::SENDER_DATA_SECRET,
+            labels::HANDSHAKE_SECRET,
+            labels::APPLICATION_SECRET,
+            labels::EXPORTER_SECRET,
+            labels::AUTHENTICATION_SECRET,
+            labels::EXTERNAL_SECRET,
+            labels::CONFIRMATION_KEY,
+            labels::MEMBERSHIP_KEY,
+            labels::RESUMPTION_PSK,
+            labels::INIT_SECRET,
+        ];
+        let lengths: Vec<usize> = vec![self.cipher_suite.hash_size(); derive_labels.len()];
+        let secrets = ks.derive_keys(&epoch_bytes, &root_secret, &derive_labels, &lengths)?;
 
         // Store secrets (DashMap handles concurrency)
         self.secrets.clear();
@@ -454,6 +552,11 @@ impl MlsGroup {
 
     pub fn current_epoch(&self) -> EpochNumber {
         self.epoch.load(Ordering::SeqCst)
+    }
+
+    /// Get the cipher suite pinned for this group
+    pub fn cipher_suite(&self) -> CipherSuite {
+        self.cipher_suite
     }
 
     /// Update the group epoch
@@ -546,6 +649,8 @@ pub struct TreeKemState {
     size: usize,
     /// Root secret
     root_secret: Vec<u8>,
+    /// Cipher suite for hashing/derivation
+    cipher_suite: CipherSuite,
 }
 
 impl TreeKemState {
@@ -554,12 +659,13 @@ impl TreeKemState {
     /// # Errors
     ///
     /// Returns `MlsError` if tree initialization fails.
-    pub fn new(initial_key: Vec<u8>) -> Result<Self> {
+    pub fn new(initial_key: Vec<u8>, cipher_suite: CipherSuite) -> Result<Self> {
         let root_secret = random_bytes(32);
         let mut state = Self {
             nodes: Vec::new(),
             size: 0,
             root_secret,
+            cipher_suite,
         };
 
         // Add initial member
@@ -629,7 +735,7 @@ impl TreeKemState {
     ///
     /// Returns `MlsError` if hash computation fails.
     pub fn compute_tree_hash(&self) -> Result<Vec<u8>> {
-        let hash = Hash::new(CipherSuite::default());
+        let hash = Hash::new(self.cipher_suite);
         let mut tree_data = Vec::new();
 
         for n in self.nodes.iter().flatten() {
@@ -670,7 +776,7 @@ impl TreeKemState {
             }
 
             // Hash combined secrets for parent
-            let hash = Hash::new(CipherSuite::default());
+            let hash = Hash::new(self.cipher_suite);
             let new_secret = hash.hash(&parent_secret);
 
             self.nodes[parent_idx] = Some(TreeNode {
@@ -763,7 +869,7 @@ impl GroupState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MemberId, MemberIdentity};
+    use crate::{CipherSuiteId, MemberId, MemberIdentity};
 
     #[test]
     fn test_group_config_default() {
@@ -811,7 +917,7 @@ mod tests {
     #[test]
     fn test_treekem_state_creation() -> crate::Result<()> {
         let initial_key = vec![1, 2, 3, 4];
-        let state = TreeKemState::new(initial_key)?;
+        let state = TreeKemState::new(initial_key, CipherSuite::default())?;
         assert_eq!(state.size, 1);
         assert!(!state.nodes.is_empty());
         Ok(())
@@ -820,7 +926,7 @@ mod tests {
     #[test]
     fn test_treekem_add_leaf() -> crate::Result<()> {
         let initial_key = vec![1, 2, 3, 4];
-        let mut state = TreeKemState::new(initial_key)?;
+        let mut state = TreeKemState::new(initial_key, CipherSuite::default())?;
 
         let new_key = vec![5, 6, 7, 8];
         state.add_leaf(1, new_key)?;
@@ -832,7 +938,7 @@ mod tests {
     #[test]
     fn test_treekem_remove_leaf() -> crate::Result<()> {
         let initial_key = vec![1, 2, 3, 4];
-        let mut state = TreeKemState::new(initial_key)?;
+        let mut state = TreeKemState::new(initial_key, CipherSuite::default())?;
 
         state.remove_leaf(0)?;
 
@@ -844,7 +950,7 @@ mod tests {
     #[test]
     fn test_treekem_root_secret() -> crate::Result<()> {
         let initial_key = vec![1, 2, 3, 4];
-        let state = TreeKemState::new(initial_key)?;
+        let state = TreeKemState::new(initial_key, CipherSuite::default())?;
 
         let root_secret = state.get_root_secret()?;
         assert!(!root_secret.is_empty());
@@ -856,7 +962,7 @@ mod tests {
     #[test]
     fn test_treekem_tree_hash() -> crate::Result<()> {
         let initial_key = vec![1, 2, 3, 4];
-        let state = TreeKemState::new(initial_key)?;
+        let state = TreeKemState::new(initial_key, CipherSuite::default())?;
 
         let hash = state.compute_tree_hash()?;
         assert!(!hash.is_empty());
@@ -996,14 +1102,17 @@ mod tests {
         let config = GroupConfig {
             max_members: Some(100),
             lifetime: Some(3600),
-            cipher_suite: 2,
+            cipher_suite: CipherSuiteId::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87,
             ..Default::default()
         };
 
         // Test config values
         assert_eq!(config.max_members, Some(100));
         assert_eq!(config.lifetime, Some(3600));
-        assert_eq!(config.cipher_suite, 2);
+        assert_eq!(
+            config.cipher_suite,
+            CipherSuiteId::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87
+        );
     }
 
     #[test]

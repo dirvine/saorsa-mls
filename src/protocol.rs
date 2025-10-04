@@ -1,11 +1,14 @@
 //! MLS protocol messages and state machine
 
 use crate::{
-    crypto::{CipherSuite, DebugMlDsaSignature, Hash},
+    crypto::{AeadCipher, CipherSuite, CipherSuiteId, DebugMlDsaSignature, Hash},
     member::*,
     EpochNumber, MessageSequence, MlsError, Result,
 };
 use bincode::Options;
+use saorsa_pqc::api::{
+    MlDsa, MlDsaPublicKey, MlDsaSecretKey, MlKem, MlKemCiphertext, MlKemSecretKey,
+};
 use serde::{Deserialize, Serialize};
 
 /// MLS message types
@@ -39,16 +42,21 @@ impl MlsMessage {
     }
 
     /// Verify the message signature
-    pub fn verify_signature(&self, verifying_key: &saorsa_pqc::api::MlDsaPublicKey) -> bool {
-        let (data, signature) = match self {
-            Self::Handshake(msg) => (&msg.content, &msg.signature.0),
-            Self::Application(msg) => (&msg.ciphertext, &msg.signature.0),
-            Self::Welcome(msg) => (&msg.group_info, &msg.signature.0),
+    pub fn verify_signature(
+        &self,
+        verifying_key: &MlDsaPublicKey,
+        suite: CipherSuite,
+    ) -> Result<bool> {
+        let (data, signature, suite_for_message) = match self {
+            Self::Handshake(msg) => (&msg.content, &msg.signature.0, suite),
+            Self::Application(msg) => (&msg.ciphertext, &msg.signature.0, suite),
+            Self::Welcome(msg) => (&msg.group_info, &msg.signature.0, msg.cipher_suite),
         };
 
-        use saorsa_pqc::api::MlDsa;
-        let ml_dsa = MlDsa::new(saorsa_pqc::api::MlDsaVariant::MlDsa65);
-        ml_dsa.verify(verifying_key, data, signature).is_ok()
+        let ml_dsa = MlDsa::new(suite_for_message.ml_dsa_variant());
+        ml_dsa
+            .verify(verifying_key, data, signature)
+            .map_err(|e| MlsError::InvalidMessage(format!("invalid signature: {e:?}")))
     }
 }
 
@@ -72,6 +80,41 @@ pub struct HandshakeMessage {
     pub sender: MemberId,
     pub content: Vec<u8>,
     pub signature: DebugMlDsaSignature,
+}
+
+impl HandshakeMessage {
+    /// Create a signed handshake message for the given content
+    pub fn new_signed(
+        epoch: EpochNumber,
+        sender: MemberId,
+        content: Vec<u8>,
+        signing_key: &MlDsaSecretKey,
+        suite: CipherSuite,
+    ) -> Result<Self> {
+        let ml_dsa = MlDsa::new(suite.ml_dsa_variant());
+        let signature = ml_dsa
+            .sign(signing_key, &content)
+            .map_err(|e| MlsError::CryptoError(format!("Signing failed: {e:?}")))?;
+
+        Ok(Self {
+            epoch,
+            sender,
+            content,
+            signature: DebugMlDsaSignature(signature),
+        })
+    }
+
+    /// Verify the handshake message signature using the provided suite
+    pub fn verify_signature(
+        &self,
+        verifying_key: &MlDsaPublicKey,
+        suite: CipherSuite,
+    ) -> Result<bool> {
+        let ml_dsa = MlDsa::new(suite.ml_dsa_variant());
+        ml_dsa
+            .verify(verifying_key, &self.content, &self.signature.0)
+            .map_err(|e| MlsError::InvalidMessage(format!("invalid signature: {e:?}")))
+    }
 }
 
 /// Application message with encrypted payload
@@ -157,7 +200,7 @@ pub struct UpdatePathNode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncryptedGroupSecrets {
     pub recipient_key_package_hash: Vec<u8>,
-    pub encrypted_group_info: Vec<u8>,
+    pub kem_ciphertext: Vec<u8>,
     pub encrypted_path_secret: Vec<u8>,
 }
 
@@ -282,6 +325,100 @@ impl WelcomeMessage {
         }
         Ok(())
     }
+
+    /// Verify the welcome message signature against the creator's public key
+    pub fn verify_signature(&self, verifying_key: &MlDsaPublicKey) -> Result<bool> {
+        let ml_dsa = MlDsa::new(self.cipher_suite.ml_dsa_variant());
+        ml_dsa
+            .verify(verifying_key, &self.group_info, &self.signature.0)
+            .map_err(|e| MlsError::InvalidMessage(format!("invalid signature: {e:?}")))
+    }
+}
+
+impl EncryptedGroupSecrets {
+    /// Return the ML-KEM ciphertext for this recipient
+    pub fn ciphertext(&self, suite: &CipherSuite) -> Result<MlKemCiphertext> {
+        MlKemCiphertext::from_bytes(suite.ml_kem_variant(), &self.kem_ciphertext)
+            .map_err(|e| MlsError::CryptoError(format!("Invalid ML-KEM ciphertext: {e:?}")))
+    }
+
+    fn hkdf_expand(shared_secret_bytes: &[u8], label: &[u8], length: usize) -> Result<Vec<u8>> {
+        use saorsa_pqc::api::{kdf::HkdfSha3_256, traits::Kdf};
+
+        let mut output = vec![0u8; length];
+        HkdfSha3_256::derive(shared_secret_bytes, None, label, &mut output)
+            .map_err(|e| MlsError::CryptoError(format!("HKDF error: {e:?}")))?;
+        Ok(output)
+    }
+
+    fn encrypt_application_secret(
+        suite: CipherSuite,
+        shared_secret_bytes: &[u8],
+        application_secret: &[u8],
+    ) -> Result<Vec<u8>> {
+        let key = Self::hkdf_expand(shared_secret_bytes, b"saorsa aead key", suite.key_size())?;
+        let nonce = Self::hkdf_expand(
+            shared_secret_bytes,
+            b"saorsa aead nonce",
+            suite.nonce_size(),
+        )?;
+        let cipher = AeadCipher::new(key, suite)?;
+        cipher
+            .encrypt(&nonce, application_secret, &[])
+            .map_err(|e| MlsError::CryptoError(format!("Path secret encrypt failed: {e:?}")))
+    }
+
+    fn decapsulate_shared_bytes(
+        &self,
+        suite: &CipherSuite,
+        kem_secret: &MlKemSecretKey,
+    ) -> Result<Vec<u8>> {
+        let ciphertext = self.ciphertext(suite)?;
+        let ml_kem = MlKem::new(suite.ml_kem_variant());
+        let shared = ml_kem
+            .decapsulate(kem_secret, &ciphertext)
+            .map_err(|e| MlsError::CryptoError(format!("Decapsulation failed: {e:?}")))?;
+        Ok(shared.to_bytes().to_vec())
+    }
+
+    /// Decapsulate the path secret using the recipient's private key
+    pub fn decapsulate_path_secret(
+        &self,
+        suite: &CipherSuite,
+        kem_secret: &MlKemSecretKey,
+    ) -> Result<Vec<u8>> {
+        let shared_bytes = self.decapsulate_shared_bytes(suite, kem_secret)?;
+        let key = Self::hkdf_expand(&shared_bytes, b"saorsa aead key", suite.key_size())?;
+        let expected_nonce =
+            Self::hkdf_expand(&shared_bytes, b"saorsa aead nonce", suite.nonce_size())?;
+
+        if self.encrypted_path_secret.len() < suite.nonce_size() {
+            return Err(MlsError::InvalidMessage(
+                "Invalid encrypted path secret".to_string(),
+            ));
+        }
+
+        let stored_nonce = &self.encrypted_path_secret[..suite.nonce_size()];
+
+        if stored_nonce != expected_nonce.as_slice() {
+            return Err(MlsError::InvalidMessage(
+                "Encrypted path secret nonce mismatch".to_string(),
+            ));
+        }
+
+        let cipher = AeadCipher::new(key, *suite)?;
+        cipher
+            .decrypt(&expected_nonce, &self.encrypted_path_secret, &[])
+            .map_err(|e| MlsError::CryptoError(format!("Path secret decrypt failed: {e:?}")))
+    }
+
+    pub(crate) fn encrypt_for_recipient(
+        suite: CipherSuite,
+        shared_secret_bytes: &[u8],
+        application_secret: &[u8],
+    ) -> Result<Vec<u8>> {
+        Self::encrypt_application_secret(suite, shared_secret_bytes, application_secret)
+    }
 }
 
 /// State machine for protocol message processing
@@ -344,7 +481,7 @@ pub struct GroupConfig {
     /// Protocol version
     pub protocol_version: u16,
     /// Cipher suite identifier  
-    pub cipher_suite: u16,
+    pub cipher_suite: crate::crypto::CipherSuiteId,
     /// Maximum number of members
     pub max_members: Option<u32>,
     /// Group lifetime in seconds
@@ -355,7 +492,7 @@ pub struct GroupConfig {
 
 impl GroupConfig {
     /// Create a new group configuration
-    pub fn new(protocol_version: u16, cipher_suite: u16) -> Self {
+    pub fn new(protocol_version: u16, cipher_suite: CipherSuiteId) -> Self {
         Self {
             protocol_version,
             cipher_suite,
@@ -363,6 +500,12 @@ impl GroupConfig {
             lifetime: None,
             schema_version: 1,
         }
+    }
+
+    /// Set cipher suite identifier
+    pub fn with_cipher_suite(mut self, cipher_suite: CipherSuiteId) -> Self {
+        self.cipher_suite = cipher_suite;
+        self
     }
 
     /// Set maximum number of members
@@ -380,7 +523,10 @@ impl GroupConfig {
 
 impl Default for GroupConfig {
     fn default() -> Self {
-        Self::new(1, 1) // Default protocol and cipher suite
+        Self::new(
+            1,
+            CipherSuiteId::MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65,
+        )
     }
 }
 
@@ -719,7 +865,7 @@ mod tests {
             group_info: vec![1, 2, 3],
             secrets: vec![EncryptedGroupSecrets {
                 recipient_key_package_hash: vec![1],
-                encrypted_group_info: vec![2],
+                kem_ciphertext: vec![2],
                 encrypted_path_secret: vec![3],
             }],
             signature: create_test_signature(),
