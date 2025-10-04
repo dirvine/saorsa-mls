@@ -205,6 +205,10 @@ impl Credential {
             .map_err(|e| MlsError::SerializationError(e.to_string()))?;
         identity.extend_from_slice(&suite_bytes);
 
+        // SECURITY FIX: Include public key in signed data to bind credential to specific keypair
+        // This prevents signature from being valid with a different public key
+        identity.extend_from_slice(&keypair.verifying_key().to_bytes());
+
         let signature = keypair.sign(&identity)?;
 
         Ok(Self::Basic {
@@ -227,6 +231,10 @@ impl Credential {
     }
 
     /// Verify the credential is valid
+    ///
+    /// For Basic credentials, verifies that the signature was created by the private key
+    /// corresponding to the provided public key. The signature covers the identity data
+    /// which includes the public key itself, binding the credential to that specific key.
     pub fn verify(&self, verifying_key: &MlDsaPublicKey, suite: CipherSuite) -> bool {
         match self {
             Self::Basic {
@@ -234,6 +242,27 @@ impl Credential {
                 signature,
                 ..
             } => {
+                // For Basic credentials, the identity data includes the public key at the end
+                // We need to verify that:
+                // 1. The signature is valid for the identity data
+                // 2. The public key in the identity matches the one being verified
+
+                // Check if the provided verifying key matches the one in the identity
+                let key_bytes = verifying_key.to_bytes();
+                let key_len = key_bytes.len();
+
+                // Identity should end with the public key
+                if identity.len() < key_len {
+                    return false;
+                }
+
+                let identity_key = &identity[identity.len() - key_len..];
+                if identity_key != key_bytes.as_slice() {
+                    // Public key mismatch - this credential is not for this key
+                    return false;
+                }
+
+                // Now verify the signature
                 use saorsa_pqc::api::MlDsa;
                 let ml_dsa = MlDsa::new(suite.ml_dsa_variant());
                 ml_dsa.verify(verifying_key, identity, &signature.0).is_ok()
