@@ -273,7 +273,7 @@ impl Hash {
 }
 
 /// Key derivation using HKDF
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct KeySchedule {
     suite: CipherSuite,
 }
@@ -355,6 +355,36 @@ impl KeySchedule {
         info.push(u8::try_from(context.len()).unwrap_or(u8::MAX));
         info.extend_from_slice(context);
         info
+    }
+
+    /// Derive an exported secret per RFC 9420 §8.5
+    ///
+    /// This implements the MLS exporter interface which allows applications
+    /// to derive secrets from the group's exporter secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if the key derivation fails.
+    pub fn export_secret(
+        &self,
+        exporter_secret: &[u8],
+        label: &str,
+        context: &[u8],
+        length: usize,
+    ) -> Result<Vec<u8>> {
+        use saorsa_pqc::api::kdf::HkdfSha3_256;
+        use saorsa_pqc::api::traits::Kdf;
+
+        // Build the exporter label per RFC 9420
+        // The label is "mls exporter" || user_label
+        let full_label = format!("mls exporter {}", label);
+        let info = Self::build_hkdf_label(&full_label, context, length);
+
+        let mut output = vec![0u8; length];
+        HkdfSha3_256::derive(exporter_secret, None, &info, &mut output)
+            .map_err(|e| MlsError::CryptoError(format!("Exporter derivation failed: {e:?}")))?;
+
+        Ok(output)
     }
 }
 

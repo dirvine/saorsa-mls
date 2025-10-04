@@ -559,6 +559,69 @@ impl MlsGroup {
         self.cipher_suite
     }
 
+    /// MLS Exporter interface per RFC 9420 §8.5
+    ///
+    /// Derives application-specific secrets from the group's exporter secret.
+    /// This allows applications to derive additional keying material that is
+    /// bound to the MLS group state and current epoch.
+    ///
+    /// The exporter is deterministic: calling it multiple times with the same
+    /// inputs in the same epoch will produce identical output. The output changes
+    /// when the epoch advances (e.g., after member additions/removals).
+    ///
+    /// # Arguments
+    ///
+    /// * `label` - Application-specific label to distinguish different uses
+    /// * `context` - Application-specific context data
+    /// * `length` - Desired output length in bytes
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if:
+    /// - The exporter secret for the current epoch is not available
+    /// - The key derivation operation fails
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use saorsa_mls::{MlsGroup, GroupConfig, MemberIdentity, MemberId};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let config = GroupConfig::default();
+    /// # let creator = MemberIdentity::generate(MemberId::generate())?;
+    /// # let group = MlsGroup::new(config, creator).await?;
+    /// // Derive a secret for presence tags (saorsa-gossip integration)
+    /// let presence_tag = group.exporter("presence-tag", b"", 32)?;
+    ///
+    /// // Derive a per-epoch salt
+    /// let epoch_salt = group.exporter("epoch-salt", b"room-id-123", 32)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn exporter(&self, label: &str, context: &[u8], length: usize) -> Result<Vec<u8>> {
+        // Get the exporter secret for the current epoch
+        let exporter_secret = self
+            .secrets
+            .get("exporter")
+            .ok_or_else(|| {
+                MlsError::CryptoError("Exporter secret not available for current epoch".to_string())
+            })?
+            .as_bytes()
+            .to_vec();
+
+        // Get the key schedule with scoped lock
+        let key_schedule = {
+            self.key_schedule
+                .read()
+                .clone()
+                .ok_or_else(|| {
+                    MlsError::CryptoError("Key schedule not initialized".to_string())
+                })?
+        }; // Lock released here
+
+        // Derive the exported secret using RFC 9420 exporter construction
+        key_schedule.export_secret(&exporter_secret, label, context, length)
+    }
+
     /// Update the group epoch
     ///
     /// # Errors
