@@ -441,6 +441,23 @@ impl KeyPair {
         }
     }
 
+    /// Generate a key pair from a seed (for FIPS KATs)
+    ///
+    /// Note: Current implementation uses standard key generation.
+    /// Deterministic generation from seed requires RNG seeding support
+    /// in saorsa-pqc which is pending upstream.
+    ///
+    /// For now, this validates that key generation works with correct sizes.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if seed is invalid or key generation fails.
+    pub fn generate_from_seed(suite: CipherSuite, _seed: &[u8]) -> Result<Self> {
+        // TODO: Use seed when saorsa-pqc provides RNG seeding APIs
+        // For now, just generate normally to validate algorithm correctness
+        Ok(Self::generate(suite))
+    }
+
     /// Get the public verification key
     #[must_use]
     pub fn verifying_key(&self) -> &MlDsaPublicKey {
@@ -467,14 +484,15 @@ impl KeyPair {
 
     /// Verify a signature
     ///
-    /// # Errors
+    /// Returns `true` if signature is valid, `false` otherwise.
     ///
-    /// Returns `MlsError::CryptoError` if the verification operation fails.
-    pub fn verify(&self, message: &[u8], signature: &MlDsaSignature) -> Result<bool> {
+    /// Note: ML-DSA verify returns `Ok(bool)` where the bool indicates validity.
+    /// We unwrap_or(false) to return false if verification fails or signature is invalid.
+    pub fn verify(&self, message: &[u8], signature: &MlDsaSignature) -> bool {
         let ml_dsa = MlDsa::new(self.suite.ml_dsa_variant());
         ml_dsa
             .verify(&self.verifying_key, message, signature)
-            .map_err(|e| MlsError::CryptoError(format!("Verification error: {e:?}")))
+            .unwrap_or(false)  // Return the bool, or false if verification errors
     }
 
     /// Perform key encapsulation
@@ -491,6 +509,25 @@ impl KeyPair {
             .encapsulate(recipient_public)
             .map_err(|e| MlsError::CryptoError(format!("Encapsulation failed: {e:?}")))?;
         Ok((ciphertext, shared_secret))
+    }
+
+    /// Perform key decapsulation (for FIPS KATs)
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if the decapsulation operation fails.
+    pub fn kem_decaps(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
+        let ml_kem = MlKem::new(self.suite.ml_kem_variant());
+
+        // Convert bytes to ciphertext
+        let ct = MlKemCiphertext::from_bytes(self.suite.ml_kem_variant(), ciphertext)
+            .map_err(|e| MlsError::CryptoError(format!("Invalid ciphertext: {e:?}")))?;
+
+        let shared_secret = ml_kem
+            .decapsulate(&self.kem_secret, &ct)
+            .map_err(|e| MlsError::CryptoError(format!("Decapsulation failed: {e:?}")))?;
+
+        Ok(shared_secret.to_bytes().to_vec())
     }
 
     /// Perform key decapsulation
@@ -811,6 +848,30 @@ impl CipherSuite {
         Ok((encapped_key, ciphertext))
     }
 
+    /// KEM encapsulation with seed (for FIPS KATs)
+    ///
+    /// Note: Current implementation uses standard encapsulation.
+    /// Deterministic encapsulation from seed requires RNG seeding support
+    /// in saorsa-pqc which is pending upstream.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MlsError::CryptoError` if encapsulation fails
+    pub fn kem_encaps_with_seed(
+        &self,
+        recipient_public_key: &MlKemPublicKey,
+        _seed: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
+        // TODO: Use seed when saorsa-pqc provides RNG seeding APIs
+        // For now, use standard encapsulation to validate algorithm correctness
+        let ml_kem = MlKem::new(self.ml_kem_variant());
+        let (shared_secret, ciphertext) = ml_kem
+            .encapsulate(recipient_public_key)
+            .map_err(|e| MlsError::CryptoError(format!("Encapsulation failed: {e:?}")))?;
+
+        Ok((ciphertext.to_bytes(), shared_secret.to_bytes().to_vec()))
+    }
+
     /// Setup HPKE sender context
     ///
     /// Returns encapsulated key and sender context for multiple encryptions
@@ -934,12 +995,12 @@ mod tests {
         let signature = kp.sign(message).unwrap();
 
         // Test with correct message
-        assert!(kp.verify(message, &signature).unwrap());
+        assert!(kp.verify(message, &signature));
 
-        // Test with wrong message - the ML-DSA verify should return an error for invalid signatures
-        // Our verify method converts that error to Ok(false)
+        // Test with wrong message - should NOT verify
         let wrong_message = b"wrong message";
-        assert!(!kp.verify(wrong_message, &signature).unwrap());
+        assert!(!kp.verify(wrong_message, &signature),
+            "Signature should not verify with wrong message");
     }
 
     #[test]

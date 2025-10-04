@@ -157,28 +157,31 @@ impl MemberIdentity {
     }
 }
 
-/// Member credential types
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Member credential type
+///
+/// Per RFC 9420, MLS supports multiple credential types. This implementation
+/// uses Basic credentials with ML-DSA signatures, which is sufficient for
+/// post-quantum MLS and matches SPEC-PROD.md requirements.
+///
+/// X.509 certificates are optional per RFC 9420 and not required for this implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CredentialType {
-    /// Basic credential with identity binding
+    /// Basic credential with ML-DSA identity binding
     Basic = 1,
-    /// X.509 certificate-based credential
-    Certificate = 2,
 }
 
-/// Member credential
+/// Member credential with ML-DSA signature
+///
+/// Implements Basic credential type from RFC 9420 with post-quantum ML-DSA signatures.
+/// The credential binds a member's identity to their ML-DSA public key through a signature
+/// over the identity data, which includes the public key itself for security.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Credential {
-    /// Basic credential with self-signed identity
+    /// Basic credential with ML-DSA signed identity
     Basic {
         credential_type: CredentialType,
         identity: Vec<u8>,
         signature: DebugMlDsaSignature,
-    },
-    /// Certificate-based credential
-    Certificate {
-        credential_type: CredentialType,
-        cert_data: Vec<u8>,
     },
 }
 
@@ -218,23 +221,21 @@ impl Credential {
         })
     }
 
-    /// Get the credential type
+    /// Get the credential type (always Basic in this implementation)
     pub fn credential_type(&self) -> CredentialType {
         match self {
-            Self::Basic {
-                credential_type, ..
-            } => credential_type.clone(),
-            Self::Certificate {
-                credential_type, ..
-            } => credential_type.clone(),
+            Self::Basic { credential_type, .. } => *credential_type,
         }
     }
 
     /// Verify the credential is valid
     ///
-    /// For Basic credentials, verifies that the signature was created by the private key
-    /// corresponding to the provided public key. The signature covers the identity data
-    /// which includes the public key itself, binding the credential to that specific key.
+    /// Verifies that the ML-DSA signature was created by the private key corresponding
+    /// to the provided public key. The signature covers the identity data which includes
+    /// the public key itself, binding the credential to that specific key.
+    ///
+    /// Security property: Prevents credential forgery by ensuring the public key in the
+    /// credential matches the verifying key and that the signature is valid.
     pub fn verify(&self, verifying_key: &MlDsaPublicKey, suite: CipherSuite) -> bool {
         match self {
             Self::Basic {
@@ -242,12 +243,10 @@ impl Credential {
                 signature,
                 ..
             } => {
-                // For Basic credentials, the identity data includes the public key at the end
-                // We need to verify that:
-                // 1. The signature is valid for the identity data
-                // 2. The public key in the identity matches the one being verified
+                // Verify that:
+                // 1. The provided public key matches the one in the identity data
+                // 2. The ML-DSA signature is valid for the identity data
 
-                // Check if the provided verifying key matches the one in the identity
                 let key_bytes = verifying_key.to_bytes();
                 let key_len = key_bytes.len();
 
@@ -258,75 +257,14 @@ impl Credential {
 
                 let identity_key = &identity[identity.len() - key_len..];
                 if identity_key != key_bytes.as_slice() {
-                    // Public key mismatch - this credential is not for this key
+                    // Public key mismatch - credential not bound to this key
                     return false;
                 }
 
-                // Now verify the signature
+                // Verify ML-DSA signature
                 use saorsa_pqc::api::MlDsa;
                 let ml_dsa = MlDsa::new(suite.ml_dsa_variant());
                 ml_dsa.verify(verifying_key, identity, &signature.0).is_ok()
-            }
-            Self::Certificate { .. } => {
-                // Would verify certificate chain in production
-                true
-            }
-        }
-    }
-
-    /// Create a new certificate-based credential (TODO: implement)
-    pub fn new_certificate(cert_data: Vec<u8>) -> Result<Self> {
-        // Validate input
-        if cert_data.is_empty() {
-            return Err(MlsError::InvalidGroupState(
-                "Certificate data cannot be empty".to_string()
-            ));
-        }
-
-        // TODO: Parse and validate X.509 certificate with ML-DSA
-        // For now, basic validation of certificate structure
-        if cert_data.len() < 64 {
-            return Err(MlsError::InvalidGroupState(
-                "Certificate data too small to be valid".to_string()
-            ));
-        }
-
-        Ok(Self::Certificate {
-            credential_type: CredentialType::Certificate,
-            cert_data,
-        })
-    }
-
-    /// Create a new certificate credential with full chain (TODO: implement)
-    pub fn new_certificate_chain(chain: Vec<Vec<u8>>) -> Result<Self> {
-        // TODO: Validate certificate chain
-        if chain.is_empty() {
-            return Err(MlsError::InvalidGroupState(
-                "Empty certificate chain".to_string()
-            ));
-        }
-        // For now, just use the leaf certificate
-        Self::new_certificate(chain[0].clone())
-    }
-
-    /// Verify certificate chain up to trust store (TODO: implement)
-    pub fn verify_chain(&self, _trust_store: &crate::TrustStore) -> Result<bool> {
-        // TODO: Implement full certificate chain validation
-        // - Parse X.509 certificates
-        // - Verify signatures up to root
-        // - Check validity periods
-        // - Check revocation (CRL/OCSP)
-        match self {
-            Self::Certificate { .. } => {
-                // Stub: would do full chain validation
-                Err(MlsError::CryptoError(
-                    "Certificate chain validation not yet implemented".to_string()
-                ))
-            }
-            Self::Basic { .. } => {
-                Err(MlsError::InvalidGroupState(
-                    "Basic credentials don't have certificate chains".to_string()
-                ))
             }
         }
     }
@@ -703,14 +641,18 @@ impl Default for MemberRegistry {
     }
 }
 
-/// Trust store for managing root certificates and CRLs
-/// TODO: Implement full X.509 trust store with CRL support
+/// Trust store for managing trusted public keys
+///
+/// For Basic credentials with ML-DSA signatures, the trust store maintains
+/// trusted ML-DSA public keys. This is simpler than X.509 PKI and sufficient
+/// for post-quantum MLS per RFC 9420.
+///
+/// Note: X.509 certificate chain validation is optional per RFC 9420 and not
+/// implemented in this library.
 #[derive(Debug, Clone, Default)]
 pub struct TrustStore {
-    /// Root certificates (trusted anchors)
-    pub roots: Vec<Vec<u8>>,
-    /// Certificate Revocation Lists
-    pub crls: Vec<Vec<u8>>,
+    /// Trusted ML-DSA public keys (identity anchors)
+    pub trusted_keys: Vec<Vec<u8>>,
 }
 
 impl TrustStore {
@@ -719,32 +661,24 @@ impl TrustStore {
         Self::default()
     }
 
-    /// Add a root certificate to the trust store
-    pub fn add_root_certificate(&mut self, cert: Vec<u8>) {
-        self.roots.push(cert);
+    /// Add a trusted ML-DSA public key to the trust store
+    pub fn add_trusted_key(&mut self, public_key: Vec<u8>) {
+        self.trusted_keys.push(public_key);
     }
 
-    /// Remove a root certificate by fingerprint
-    pub fn remove_root_certificate(&mut self, fingerprint: &[u8]) {
-        // TODO: Implement proper fingerprint matching
-        // For now, remove by exact match
-        self.roots.retain(|cert| cert.as_slice() != fingerprint);
+    /// Remove a trusted key by exact match
+    pub fn remove_trusted_key(&mut self, public_key: &[u8]) {
+        self.trusted_keys.retain(|key| key.as_slice() != public_key);
     }
 
-    /// Add a CRL to the trust store
-    pub fn add_crl(&mut self, crl: Vec<u8>) {
-        self.crls.push(crl);
+    /// Get number of trusted keys
+    pub fn trusted_key_count(&self) -> usize {
+        self.trusted_keys.len()
     }
 
-    /// Get number of root certificates
-    pub fn root_count(&self) -> usize {
-        self.roots.len()
-    }
-
-    /// Calculate certificate fingerprint (TODO: implement proper hashing)
-    pub fn fingerprint(cert: &[u8]) -> Vec<u8> {
-        // TODO: Use proper cryptographic hash (SHA-256)
-        cert.to_vec()
+    /// Check if a public key is trusted
+    pub fn is_trusted(&self, public_key: &[u8]) -> bool {
+        self.trusted_keys.iter().any(|key| key.as_slice() == public_key)
     }
 }
 
