@@ -4,11 +4,12 @@ use saorsa_mls::{
 };
 
 #[test]
-fn default_suite_matches_spec_transitional_profile() {
+fn default_suite_matches_spec2_pqc_only() {
     let suite = CipherSuite::default();
+    // SPEC-2 default: 0x0B01 (ChaCha20Poly1305 + SHA256 + ML-DSA-65)
     assert_eq!(
         suite.id(),
-        CipherSuiteId::MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65
+        CipherSuiteId::SPEC2_MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65
     );
     assert_eq!(suite.kem(), MlsKem::MlKem768);
     assert_eq!(suite.signature(), MlsSignature::MlDsa65);

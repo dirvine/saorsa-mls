@@ -7,14 +7,14 @@ use crate::{
     crypto::{labels, random_bytes, AeadCipher, CipherSuite, Hash, KeySchedule},
     member::{MemberId, MemberIdentity, MemberRegistry},
     protocol::{
-        ApplicationMessage, EncryptedGroupSecrets, GroupInfo, ProtocolStateMachine, WelcomeMessage,
+        ApplicationMessage, AuditLogEntry, EncryptedGroupSecrets, GroupInfo, ProtocolStateMachine, WelcomeMessage,
     },
     EpochNumber, MlsError, MlsStats, Result,
 };
 use bincode::Options;
 use dashmap::DashMap;
 use parking_lot::RwLock;
-use saorsa_pqc::api::{MlDsa, MlKem};
+use saorsa_pqc::api::{MlDsa, MlDsaPublicKey, MlKem};
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -80,6 +80,11 @@ pub struct MlsGroup {
     // Per-sender replay windows
     recv_windows: Arc<DashMap<MemberId, ReplayWindow>>,
     cipher_suite: CipherSuite,
+    // Rekey tracking (SPEC-2 §3)
+    epoch_start_time: Arc<RwLock<SystemTime>>,
+    epoch_message_count: AtomicU64,
+    // Audit logging (SPEC-2 §8)
+    audit_log: Arc<RwLock<Vec<AuditLogEntry>>>,
 }
 
 impl MlsGroup {
@@ -108,6 +113,23 @@ impl MlsGroup {
 
         let tree = TreeKemState::new(creator.key_package.agreement_key.clone(), cipher_suite)?;
 
+        // Create initial audit log entry
+        let mut audit_log = Vec::new();
+        audit_log.push(AuditLogEntry {
+            timestamp: SystemTime::now(),
+            event_type: "group_created".to_string(),
+            cipher_suite_id: config.cipher_suite,
+            is_pqc_only: cipher_suite.is_pqc_only(),
+            is_deprecated: cipher_suite.is_deprecated(),
+            member_id: Some(creator.id),
+            old_epoch: None,
+            new_epoch: Some(0),
+            context: Some(format!("Group created with cipher suite 0x{:04X} ({})",
+                config.cipher_suite.as_u16(),
+                if cipher_suite.is_pqc_only() { "PQC-only" } else { "deprecated" }
+            )),
+        });
+
         let group = Self {
             config,
             group_id,
@@ -122,6 +144,9 @@ impl MlsGroup {
             secrets: Arc::new(DashMap::new()),
             recv_windows: Arc::new(DashMap::new()),
             cipher_suite,
+            epoch_start_time: Arc::new(RwLock::new(SystemTime::now())),
+            epoch_message_count: AtomicU64::new(0),
+            audit_log: Arc::new(RwLock::new(audit_log)),
         };
 
         // Initialize key schedule for epoch 0
@@ -207,14 +232,18 @@ impl MlsGroup {
                 .map_err(|e| MlsError::SerializationError(e.to_string()))?
         };
 
-        let signing_key = self
-            .creator
-            .signing_key()
-            .ok_or_else(|| MlsError::InvalidGroupState("missing signing key".to_string()))?;
-        let ml_dsa = MlDsa::new(self.cipher_suite.ml_dsa_variant());
-        let signature = ml_dsa
-            .sign(signing_key, &group_info_bytes)
-            .map_err(|e| MlsError::CryptoError(format!("Signing failed: {e:?}")))?;
+        // Sign group info with creator's key (supports both ML-DSA and SLH-DSA)
+        let signature_enum = self.creator.sign(&group_info_bytes)?;
+
+        // Extract the underlying ML-DSA signature (Welcome message currently only supports ML-DSA)
+        let signature = match signature_enum {
+            crate::crypto::Signature::MlDsa(sig) => sig,
+            crate::crypto::Signature::SlhDsa(_) => {
+                return Err(MlsError::ProtocolError(
+                    "Welcome messages with SLH-DSA not yet supported".to_string()
+                ));
+            }
+        };
 
         let shared_bytes = shared_secret.to_bytes();
         let encrypted_path_secret = EncryptedGroupSecrets::encrypt_for_recipient(
@@ -237,6 +266,19 @@ impl MlsGroup {
             secrets: welcome_secrets,
             signature: crate::crypto::DebugMlDsaSignature(signature),
         };
+
+        // Log member addition (SPEC-2 §8)
+        self.audit_log.write().push(AuditLogEntry {
+            timestamp: SystemTime::now(),
+            event_type: "member_added".to_string(),
+            cipher_suite_id: self.config.cipher_suite,
+            is_pqc_only: self.cipher_suite.is_pqc_only(),
+            is_deprecated: self.cipher_suite.is_deprecated(),
+            member_id: Some(identity.id),
+            old_epoch: None,
+            new_epoch: Some(self.current_epoch()),
+            context: Some(format!("Member {:?} added to group", identity.id)),
+        });
 
         Ok(welcome)
     }
@@ -277,6 +319,19 @@ impl MlsGroup {
             self.advance_epoch()?;
         }
 
+        // Log member removal (SPEC-2 §8)
+        self.audit_log.write().push(AuditLogEntry {
+            timestamp: SystemTime::now(),
+            event_type: "member_removed".to_string(),
+            cipher_suite_id: self.config.cipher_suite,
+            is_pqc_only: self.cipher_suite.is_pqc_only(),
+            is_deprecated: self.cipher_suite.is_deprecated(),
+            member_id: Some(*member_id),
+            old_epoch: None,
+            new_epoch: Some(self.current_epoch()),
+            context: Some(format!("Member {:?} removed from group", member_id)),
+        });
+
         Ok(())
     }
 
@@ -307,15 +362,18 @@ impl MlsGroup {
         let mut wire_ciphertext = nonce;
         wire_ciphertext.extend_from_slice(&ciphertext);
 
-        // Sign the ciphertext using the creator's signing key
-        let signing_key = self
-            .creator
-            .signing_key()
-            .ok_or_else(|| MlsError::InvalidGroupState("missing signing key".to_string()))?;
-        let ml_dsa = MlDsa::new(self.cipher_suite.ml_dsa_variant());
-        let signature = ml_dsa
-            .sign(signing_key, &wire_ciphertext)
-            .map_err(|e| MlsError::CryptoError(format!("Signing failed: {e:?}")))?;
+        // Sign the ciphertext using the creator's signing key (supports both ML-DSA and SLH-DSA)
+        let signature_enum = self.creator.sign(&wire_ciphertext)?;
+
+        // Extract the underlying ML-DSA signature (Application message currently only supports ML-DSA)
+        let signature = match signature_enum {
+            crate::crypto::Signature::MlDsa(sig) => sig,
+            crate::crypto::Signature::SlhDsa(_) => {
+                return Err(MlsError::ProtocolError(
+                    "Application messages with SLH-DSA not yet supported".to_string()
+                ));
+            }
+        };
 
         let message = ApplicationMessage {
             epoch: self.current_epoch(),
@@ -325,6 +383,9 @@ impl MlsGroup {
             ciphertext: wire_ciphertext,
             signature: crate::crypto::DebugMlDsaSignature(signature),
         };
+
+        // Increment epoch message counter for rekey tracking (SPEC-2 §3)
+        self.epoch_message_count.fetch_add(1, Ordering::Relaxed);
 
         // Update statistics with scoped lock
         {
@@ -363,7 +424,10 @@ impl MlsGroup {
             let member = members
                 .get_member(index)
                 .ok_or(MlsError::MemberNotFound(message.sender))?;
-            member.identity.key_package.verifying_key.0.clone()
+            MlDsaPublicKey::from_bytes(
+                self.cipher_suite.ml_dsa_variant(),
+                &member.identity.key_package.verifying_key
+            ).expect("Invalid ML-DSA public key")
         };
         let ml_dsa = MlDsa::new(self.cipher_suite.ml_dsa_variant());
         let signature_valid = ml_dsa
@@ -465,7 +529,12 @@ impl MlsGroup {
 
     /// Advance to next epoch - FIXED to avoid deadlock
     fn advance_epoch(&self) -> Result<()> {
+        let old_epoch = self.epoch.load(Ordering::SeqCst);
         let new_epoch = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
+
+        // Reset rekey tracking counters (SPEC-2 §3)
+        *self.epoch_start_time.write() = SystemTime::now();
+        self.epoch_message_count.store(0, Ordering::Relaxed);
 
         // Update protocol state with scoped lock
         {
@@ -481,6 +550,19 @@ impl MlsGroup {
 
         // Reinitialize keys (no locks held during async operation)
         self.initialize_epoch_keys()?;
+
+        // Log epoch advance (SPEC-2 §8)
+        self.audit_log.write().push(AuditLogEntry {
+            timestamp: SystemTime::now(),
+            event_type: "epoch_advanced".to_string(),
+            cipher_suite_id: self.config.cipher_suite,
+            is_pqc_only: self.cipher_suite.is_pqc_only(),
+            is_deprecated: self.cipher_suite.is_deprecated(),
+            member_id: None,
+            old_epoch: Some(old_epoch),
+            new_epoch: Some(new_epoch),
+            context: Some(format!("Epoch advanced: {} -> {} (membership change)", old_epoch, new_epoch)),
+        });
 
         Ok(())
     }
@@ -557,6 +639,79 @@ impl MlsGroup {
     /// Get the cipher suite pinned for this group
     pub fn cipher_suite(&self) -> CipherSuite {
         self.cipher_suite
+    }
+
+    /// Get current epoch number
+    pub fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Relaxed)
+    }
+
+    /// Get epoch age (time since epoch started) - SPEC-2 §3
+    pub fn epoch_age(&self) -> std::time::Duration {
+        self.epoch_start_time
+            .read()
+            .elapsed()
+            .unwrap_or(std::time::Duration::from_secs(0))
+    }
+
+    /// Get number of messages sent in current epoch - SPEC-2 §3
+    pub fn epoch_message_count(&self) -> u64 {
+        self.epoch_message_count.load(Ordering::Relaxed)
+    }
+
+    /// Check if rekey is needed per SPEC-2 §3 policy
+    ///
+    /// Returns true if either:
+    /// - Epoch age >= max_epoch_age (default 24 hours)
+    /// - Message count >= max_messages_per_epoch (default 10,000)
+    pub fn needs_rekey(&self) -> bool {
+        let epoch_age = self.epoch_age();
+        let message_count = self.epoch_message_count();
+
+        epoch_age >= self.config.max_epoch_age() ||
+        message_count >= self.config.max_messages_per_epoch()
+    }
+
+    /// Perform epoch update / rekey - SPEC-2 §3
+    pub async fn perform_epoch_update(&mut self) -> Result<()> {
+        let old_epoch = self.epoch();
+        let new_epoch = old_epoch + 1;
+
+        // Advance epoch
+        self.epoch.store(new_epoch, Ordering::Relaxed);
+
+        // Reset counters
+        *self.epoch_start_time.write() = SystemTime::now();
+        self.epoch_message_count.store(0, Ordering::Relaxed);
+
+        // Reinitialize keys
+        self.initialize_epoch_keys()?;
+
+        // Log epoch advance
+        self.audit_log.write().push(AuditLogEntry {
+            timestamp: SystemTime::now(),
+            event_type: "epoch_advanced".to_string(),
+            cipher_suite_id: self.config.cipher_suite,
+            is_pqc_only: self.cipher_suite.is_pqc_only(),
+            is_deprecated: self.cipher_suite.is_deprecated(),
+            member_id: None,
+            old_epoch: Some(old_epoch),
+            new_epoch: Some(new_epoch),
+            context: Some(format!("Automatic rekey: epoch {} -> {}", old_epoch, new_epoch)),
+        });
+
+        Ok(())
+    }
+
+    /// Get audit log entries - SPEC-2 §8
+    pub fn get_audit_log(&self) -> Vec<AuditLogEntry> {
+        self.audit_log.read().clone()
+    }
+
+    /// Export audit log as JSON - SPEC-2 §8
+    pub fn export_audit_log_json(&self) -> Result<String> {
+        serde_json::to_string_pretty(&*self.audit_log.read())
+            .map_err(|e| MlsError::SerializationError(e.to_string()))
     }
 
     /// MLS Exporter interface per RFC 9420 §8.5

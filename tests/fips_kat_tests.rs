@@ -158,7 +158,7 @@ fn test_fips204_mldsa65_kat() {
 
     // Validate FIPS 204 ML-DSA-65 public key size
     assert_eq!(
-        keypair.verifying_key().to_bytes().len(),
+        keypair.verifying_key_bytes().len(),
         1952,  // ML-DSA-65 public key size per FIPS 204
         "ML-DSA-65 public key should be 1952 bytes"
     );
@@ -190,7 +190,7 @@ fn test_fips204_mldsa87_kat() {
 
     // Validate FIPS 204 ML-DSA-87 public key size
     assert_eq!(
-        keypair.verifying_key().to_bytes().len(),
+        keypair.verifying_key_bytes().len(),
         2592,  // ML-DSA-87 public key size per FIPS 204
         "ML-DSA-87 public key should be 2592 bytes"
     );
@@ -273,9 +273,9 @@ fn test_fips_cross_suite_isolation() {
         "256-bit security level uses ML-KEM-1024");
 
     // Validate signature key sizes per FIPS 204
-    assert_eq!(kp_128.verifying_key().to_bytes().len(), 1952,
+    assert_eq!(kp_128.verifying_key_bytes().len(), 1952,
         "128-bit security level uses ML-DSA-65");
-    assert_eq!(kp_256.verifying_key().to_bytes().len(), 2592,
+    assert_eq!(kp_256.verifying_key_bytes().len(), 2592,
         "256-bit security level uses ML-DSA-87");
 }
 
@@ -305,7 +305,7 @@ fn test_nist_acvp_vectors() {
         // Validate key generation works
         assert!(!keypair.public_key().to_bytes().is_empty(), "Public key not empty");
         assert_eq!(keypair.public_key().to_bytes().len(), 1184, "Correct ML-KEM-768 size");
-        assert_eq!(keypair.verifying_key().to_bytes().len(), 1952, "Correct ML-DSA-65 size");
+        assert_eq!(keypair.verifying_key_bytes().len(), 1952, "Correct ML-DSA-65 size");
     }
 }
 
@@ -331,8 +331,8 @@ fn test_fips_multiple_key_generation() {
     // Validate both keys are valid (non-empty, correct sizes)
     assert!(!kp1.public_key().to_bytes().is_empty(), "KP1 public key not empty");
     assert!(!kp2.public_key().to_bytes().is_empty(), "KP2 public key not empty");
-    assert!(!kp1.verifying_key().to_bytes().is_empty(), "KP1 signing key not empty");
-    assert!(!kp2.verifying_key().to_bytes().is_empty(), "KP2 signing key not empty");
+    assert!(!kp1.verifying_key_bytes().is_empty(), "KP1 signing key not empty");
+    assert!(!kp2.verifying_key_bytes().is_empty(), "KP2 signing key not empty");
 
     // Validate correct sizes for default suite (ML-KEM-768, ML-DSA-65)
     assert_eq!(kp1.public_key().to_bytes().len(), 1184, "KP1 KEM key size");
@@ -365,7 +365,7 @@ fn test_all_ciphersuites_fips_compliant() {
         );
 
         assert_eq!(
-            keypair.verifying_key().to_bytes().len(),
+            keypair.verifying_key_bytes().len(),
             expected_sig_pk_len,
             "Signature public key size mismatch for {:?}",
             suite_id

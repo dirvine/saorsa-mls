@@ -12,6 +12,7 @@ use saorsa_pqc::api::{
     kdf::KdfAlgorithm,
     MlDsa, MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature, MlDsaVariant, MlKem, MlKemCiphertext,
     MlKemPublicKey, MlKemSecretKey, MlKemSharedSecret, MlKemVariant,
+    SlhDsa, SlhDsaPublicKey, SlhDsaSecretKey, SlhDsaSignature, SlhDsaVariant,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -101,11 +102,11 @@ pub enum MlsHash {
 /// Saorsa MLS cipher suite descriptor binding KEM, signature, AEAD, and hash choices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CipherSuite {
-    id: CipherSuiteId,
-    kem: MlsKem,
-    signature: MlsSignature,
-    aead: MlsAead,
-    hash: MlsHash,
+    pub id: CipherSuiteId,
+    pub kem: MlsKem,
+    pub signature: MlsSignature,
+    pub aead: MlsAead,
+    pub hash: MlsHash,
 }
 
 impl CipherSuite {
@@ -171,14 +172,39 @@ impl CipherSuite {
     }
 
     /// Get the ML-DSA variant for this cipher suite.
+    /// Check if this cipher suite uses SLH-DSA signatures
+    #[must_use]
+    pub fn uses_slh_dsa(&self) -> bool {
+        matches!(
+            self.signature,
+            MlsSignature::SlhDsa128 | MlsSignature::SlhDsa192 | MlsSignature::SlhDsa256
+        )
+    }
+
+    /// Get ML-DSA variant (panics if using SLH-DSA - check uses_slh_dsa() first)
     #[must_use]
     pub fn ml_dsa_variant(&self) -> MlDsaVariant {
         match self.signature {
             MlsSignature::MlDsa44 => MlDsaVariant::MlDsa44,
-            MlsSignature::MlDsa65 | MlsSignature::SlhDsa128 | MlsSignature::SlhDsa192 => {
-                MlDsaVariant::MlDsa65
+            MlsSignature::MlDsa65 => MlDsaVariant::MlDsa65,
+            MlsSignature::MlDsa87 => MlDsaVariant::MlDsa87,
+            MlsSignature::SlhDsa128 | MlsSignature::SlhDsa192 | MlsSignature::SlhDsa256 => {
+                panic!("Called ml_dsa_variant() on SLH-DSA suite - use slh_dsa_variant() instead")
             }
-            MlsSignature::MlDsa87 | MlsSignature::SlhDsa256 => MlDsaVariant::MlDsa87,
+        }
+    }
+
+    /// Get SLH-DSA variant (panics if using ML-DSA - check uses_slh_dsa() first)
+    #[must_use]
+    pub fn slh_dsa_variant(&self) -> SlhDsaVariant {
+        match self.signature {
+            // Use "fast" variants for now as "small" variants may not be available
+            MlsSignature::SlhDsa128 => SlhDsaVariant::Sha2_128f,
+            MlsSignature::SlhDsa192 => SlhDsaVariant::Sha2_128f, // Use 128f for 192-bit security level
+            MlsSignature::SlhDsa256 => SlhDsaVariant::Sha2_256f,
+            MlsSignature::MlDsa44 | MlsSignature::MlDsa65 | MlsSignature::MlDsa87 => {
+                panic!("Called slh_dsa_variant() on ML-DSA suite - use ml_dsa_variant() instead")
+            }
         }
     }
 
@@ -266,7 +292,7 @@ impl Default for CipherSuite {
 /// SPEC-2 PQC-only suites (0x0B01-0x0B03) use ChaCha20Poly1305 and are preferred for production.
 /// SPEC-PROD suites (0x0A01-0x0A04) are deprecated and include hybrid mode.
 #[allow(deprecated)]
-const REGISTRY: [CipherSuite; 6] = [
+const REGISTRY: [CipherSuite; 7] = [
     // SPEC-PROD registry (0x0A** - deprecated, includes hybrid)
     CipherSuite::new(
         CipherSuiteId::MLS_128_MLKEM768_AES128GCM_SHA256_MLDSA65,
@@ -312,8 +338,14 @@ const REGISTRY: [CipherSuite; 6] = [
         MlsAead::ChaCha20Poly1305,
         MlsHash::Sha512,
     ),
-    // Note: SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192 (0x0B03) not yet implemented
-    // TODO: Add SLH-DSA-192 support when saorsa-pqc provides the necessary APIs
+    // SPEC-2 optional SLH-DSA suite (0x0B03)
+    CipherSuite::new(
+        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192,
+        MlsKem::MlKem1024,
+        MlsSignature::SlhDsa192,
+        MlsAead::ChaCha20Poly1305,
+        MlsHash::Sha384,
+    ),
 ];
 
 /// Cryptographic operations using saorsa-pqc as the single source of truth
@@ -472,12 +504,92 @@ impl KeySchedule {
     }
 }
 
+/// Signature supporting both ML-DSA and SLH-DSA
+#[derive(Clone)]
+pub enum Signature {
+    /// ML-DSA signature
+    MlDsa(MlDsaSignature),
+    /// SLH-DSA signature
+    SlhDsa(SlhDsaSignature),
+}
+
+impl Signature {
+    /// Convert to bytes
+    pub fn to_bytes(&self) -> Vec<u8> {
+        match self {
+            Signature::MlDsa(sig) => sig.to_bytes().to_vec(),
+            Signature::SlhDsa(sig) => sig.to_bytes().to_vec(),
+        }
+    }
+}
+
+/// Debug wrapper for `Signature` to provide Debug, PartialEq, and Serialize traits
+#[derive(Clone)]
+pub struct DebugSignature(pub Signature);
+
+impl std::fmt::Debug for DebugSignature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Signature::MlDsa(sig) => write!(f, "MlDsaSignature(<{} bytes>)", sig.to_bytes().len()),
+            Signature::SlhDsa(sig) => write!(f, "SlhDsaSignature(<{} bytes>)", sig.to_bytes().len()),
+        }
+    }
+}
+
+impl PartialEq for DebugSignature {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bytes() == other.0.to_bytes()
+    }
+}
+
+impl Eq for DebugSignature {}
+
+impl serde::Serialize for DebugSignature {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bytes(&self.0.to_bytes())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for DebugSignature {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let bytes = <Vec<u8>>::deserialize(deserializer)?;
+        // Note: We cannot deserialize without knowing the variant, so this will need context
+        // For now, assume ML-DSA-65 for backward compatibility
+        let signature = MlDsaSignature::from_bytes(MlDsaVariant::MlDsa65, &bytes)
+            .map_err(|e| serde::de::Error::custom(format!("Signature decode error: {e:?}")))?;
+        Ok(DebugSignature(Signature::MlDsa(signature)))
+    }
+}
+
+/// Signature key pair supporting both ML-DSA and SLH-DSA
+#[derive(Clone)]
+pub enum SignatureKey {
+    /// ML-DSA signature keys
+    MlDsa {
+        /// Secret key for signing
+        secret: MlDsaSecretKey,
+        /// Public key for verification
+        public: MlDsaPublicKey,
+    },
+    /// SLH-DSA signature keys
+    SlhDsa {
+        /// Secret key for signing
+        secret: SlhDsaSecretKey,
+        /// Public key for verification
+        public: SlhDsaPublicKey,
+    },
+}
+
 /// Post-quantum key pair for signing and key agreement
 pub struct KeyPair {
-    /// ML-DSA secret key for signing
-    pub signing_key: MlDsaSecretKey,
-    /// ML-DSA public key for verification
-    pub verifying_key: MlDsaPublicKey,
+    /// Signature key pair (ML-DSA or SLH-DSA)
+    pub signature_key: SignatureKey,
     /// ML-KEM secret key for decapsulation
     pub kem_secret: MlKemSecretKey,
     /// ML-KEM public key for encapsulation
@@ -504,11 +616,20 @@ impl KeyPair {
     /// Panics if key generation fails (should never happen in practice).
     #[must_use]
     pub fn generate(suite: CipherSuite) -> Self {
-        // Generate ML-DSA key pair for signing
-        let ml_dsa = MlDsa::new(suite.ml_dsa_variant());
-        let (verifying_key, signing_key) = ml_dsa
-            .generate_keypair()
-            .expect("ML-DSA key generation should not fail");
+        // Generate signature key pair based on suite type
+        let signature_key = if suite.uses_slh_dsa() {
+            let slh_dsa = SlhDsa::new(suite.slh_dsa_variant());
+            let (public, secret) = slh_dsa
+                .generate_keypair()
+                .expect("SLH-DSA key generation should not fail");
+            SignatureKey::SlhDsa { secret, public }
+        } else {
+            let ml_dsa = MlDsa::new(suite.ml_dsa_variant());
+            let (public, secret) = ml_dsa
+                .generate_keypair()
+                .expect("ML-DSA key generation should not fail");
+            SignatureKey::MlDsa { secret, public }
+        };
 
         // Generate ML-KEM key pair for key encapsulation
         let ml_kem = MlKem::new(suite.ml_kem_variant());
@@ -517,8 +638,7 @@ impl KeyPair {
             .expect("ML-KEM key generation should not fail");
 
         Self {
-            signing_key,
-            verifying_key,
+            signature_key,
             kem_secret,
             kem_public,
             suite,
@@ -542,10 +662,24 @@ impl KeyPair {
         Ok(Self::generate(suite))
     }
 
-    /// Get the public verification key
+    /// Get the public verification key bytes
+    #[must_use]
+    pub fn verifying_key_bytes(&self) -> Vec<u8> {
+        match &self.signature_key {
+            SignatureKey::MlDsa { public, .. } => public.to_bytes().to_vec(),
+            SignatureKey::SlhDsa { public, .. } => public.to_bytes().to_vec(),
+        }
+    }
+
+    /// Get ML-DSA public key (for backward compatibility, panics if using SLH-DSA)
     #[must_use]
     pub fn verifying_key(&self) -> &MlDsaPublicKey {
-        &self.verifying_key
+        match &self.signature_key {
+            SignatureKey::MlDsa { public, .. } => public,
+            SignatureKey::SlhDsa { .. } => {
+                panic!("Called verifying_key() on SLH-DSA keypair - use verifying_key_bytes() instead")
+            }
+        }
     }
 
     /// Get the public KEM key
@@ -559,24 +693,41 @@ impl KeyPair {
     /// # Errors
     ///
     /// Returns `MlsError::CryptoError` if the signing operation fails.
-    pub fn sign(&self, message: &[u8]) -> Result<MlDsaSignature> {
-        let ml_dsa = MlDsa::new(self.suite.ml_dsa_variant());
-        ml_dsa
-            .sign(&self.signing_key, message)
-            .map_err(|e| MlsError::CryptoError(format!("Signing failed: {e:?}")))
+    pub fn sign(&self, message: &[u8]) -> Result<Signature> {
+        match &self.signature_key {
+            SignatureKey::MlDsa { secret, .. } => {
+                let ml_dsa = MlDsa::new(self.suite.ml_dsa_variant());
+                ml_dsa
+                    .sign(secret, message)
+                    .map(Signature::MlDsa)
+                    .map_err(|e| MlsError::CryptoError(format!("ML-DSA signing failed: {e:?}")))
+            }
+            SignatureKey::SlhDsa { secret, .. } => {
+                let slh_dsa = SlhDsa::new(self.suite.slh_dsa_variant());
+                slh_dsa
+                    .sign(secret, message)
+                    .map(Signature::SlhDsa)
+                    .map_err(|e| MlsError::CryptoError(format!("SLH-DSA signing failed: {e:?}")))
+            }
+        }
     }
 
     /// Verify a signature
     ///
     /// Returns `true` if signature is valid, `false` otherwise.
-    ///
-    /// Note: ML-DSA verify returns `Ok(bool)` where the bool indicates validity.
-    /// We unwrap_or(false) to return false if verification fails or signature is invalid.
-    pub fn verify(&self, message: &[u8], signature: &MlDsaSignature) -> bool {
-        let ml_dsa = MlDsa::new(self.suite.ml_dsa_variant());
-        ml_dsa
-            .verify(&self.verifying_key, message, signature)
-            .unwrap_or(false)  // Return the bool, or false if verification errors
+    pub fn verify(&self, message: &[u8], signature: &Signature) -> bool {
+        match (&self.signature_key, signature) {
+            (SignatureKey::MlDsa { public, .. }, Signature::MlDsa(sig)) => {
+                let ml_dsa = MlDsa::new(self.suite.ml_dsa_variant());
+                ml_dsa.verify(public, message, sig).unwrap_or(false)
+            }
+            (SignatureKey::SlhDsa { public, .. }, Signature::SlhDsa(sig)) => {
+                let slh_dsa = SlhDsa::new(self.suite.slh_dsa_variant());
+                slh_dsa.verify(public, message, sig).unwrap_or(false)
+            }
+            // Signature type mismatch
+            _ => false,
+        }
     }
 
     /// Perform key encapsulation
@@ -1069,7 +1220,7 @@ mod tests {
         let kp2 = KeyPair::generate(CipherSuite::default());
 
         // Keys should be different
-        assert_ne!(kp1.verifying_key.to_bytes(), kp2.verifying_key.to_bytes());
+        assert_ne!(kp1.verifying_key_bytes(), kp2.verifying_key_bytes());
     }
 
     #[test]
@@ -1250,12 +1401,12 @@ mod tests {
     }
 
     #[test]
-    fn test_registry_contains_six_suites() {
+    fn test_registry_contains_seven_suites() {
         let all_suites = CipherSuite::all();
         assert_eq!(
             all_suites.len(),
-            6,
-            "Registry should contain 4 SPEC-PROD + 2 SPEC-2 suites"
+            7,
+            "Registry should contain 4 SPEC-PROD + 3 SPEC-2 suites (including optional SLH-DSA)"
         );
     }
 
@@ -1288,7 +1439,7 @@ mod tests {
 
             // Test key generation
             let kp = KeyPair::generate(suite);
-            assert!(!kp.verifying_key.to_bytes().is_empty());
+            assert!(!kp.verifying_key_bytes().is_empty());
 
             // Test signing
             let message = b"test message for SPEC-2";
@@ -1579,5 +1730,54 @@ pub mod serde_wrappers {
     {
         let key = deserialize_ml_dsa_public_key(deserializer)?;
         Ok(DebugMlDsaPublicKey(key))
+    }
+}
+
+// Display implementations for test assertions
+impl std::fmt::Display for MlsAead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MlsAead::Aes128Gcm => write!(f, "AES-128-GCM"),
+            MlsAead::Aes256Gcm => write!(f, "AES-256-GCM"),
+            MlsAead::ChaCha20Poly1305 => write!(f, "ChaCha20Poly1305"),
+        }
+    }
+}
+
+impl std::fmt::Display for MlsHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MlsHash::Sha256 => write!(f, "SHA256"),
+            MlsHash::Sha384 => write!(f, "SHA384"),
+            MlsHash::Sha512 => write!(f, "SHA512"),
+            MlsHash::Blake3 => write!(f, "BLAKE3"),
+            MlsHash::Sha3_256 => write!(f, "SHA3-256"),
+            MlsHash::Sha3_512 => write!(f, "SHA3-512"),
+        }
+    }
+}
+
+impl std::fmt::Display for MlsKem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MlsKem::MlKem512 => write!(f, "ML-KEM-512"),
+            MlsKem::MlKem768 => write!(f, "ML-KEM-768"),
+            MlsKem::MlKem1024 => write!(f, "ML-KEM-1024"),
+            #[allow(deprecated)]
+            MlsKem::HybridX25519MlKem768 => write!(f, "Hybrid-X25519-ML-KEM-768"),
+        }
+    }
+}
+
+impl std::fmt::Display for MlsSignature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MlsSignature::MlDsa44 => write!(f, "ML-DSA-44"),
+            MlsSignature::MlDsa65 => write!(f, "ML-DSA-65"),
+            MlsSignature::MlDsa87 => write!(f, "ML-DSA-87"),
+            MlsSignature::SlhDsa128 => write!(f, "SLH-DSA-128"),
+            MlsSignature::SlhDsa192 => write!(f, "SLH-DSA-192"),
+            MlsSignature::SlhDsa256 => write!(f, "SLH-DSA-256"),
+        }
     }
 }

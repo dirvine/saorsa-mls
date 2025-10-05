@@ -67,7 +67,7 @@ pub use crypto::{
 };
 pub use group::{GroupConfig, GroupId, GroupState, MlsGroup};
 pub use member::{Credential, CredentialType, GroupMember, KeyPackage, MemberId, MemberIdentity, MemberState, TrustStore};
-pub use protocol::*;
+pub use protocol::{AuditLogEntry, *};
 
 /// Errors that can occur in MLS operations
 #[derive(Debug, Error)]

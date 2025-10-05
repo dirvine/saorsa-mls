@@ -480,12 +480,16 @@ impl MlsMessage {
 pub struct GroupConfig {
     /// Protocol version
     pub protocol_version: u16,
-    /// Cipher suite identifier  
+    /// Cipher suite identifier
     pub cipher_suite: crate::crypto::CipherSuiteId,
     /// Maximum number of members
     pub max_members: Option<u32>,
     /// Group lifetime in seconds
     pub lifetime: Option<u64>,
+    /// Maximum epoch age in milliseconds (SPEC-2 §3: default 24 hours)
+    pub max_epoch_age_millis: u64,
+    /// Maximum messages per epoch (SPEC-2 §3: default 10,000)
+    pub max_messages_per_epoch: u64,
     /// Schema version for forward compatibility
     pub schema_version: u8,
 }
@@ -498,6 +502,8 @@ impl GroupConfig {
             cipher_suite,
             max_members: None,
             lifetime: None,
+            max_epoch_age_millis: 24 * 3600 * 1000, // 24 hours in milliseconds per SPEC-2 §3
+            max_messages_per_epoch: 10_000, // 10,000 messages per SPEC-2 §3
             schema_version: 1,
         }
     }
@@ -519,13 +525,36 @@ impl GroupConfig {
         self.lifetime = Some(lifetime);
         self
     }
+
+    /// Set maximum epoch age (SPEC-2 §3 requirement)
+    pub fn with_max_epoch_age(mut self, duration: std::time::Duration) -> Self {
+        self.max_epoch_age_millis = duration.as_millis() as u64;
+        self
+    }
+
+    /// Set maximum messages per epoch (SPEC-2 §3 requirement)
+    pub fn with_max_messages_per_epoch(mut self, count: u64) -> Self {
+        self.max_messages_per_epoch = count;
+        self
+    }
+
+    /// Get maximum epoch age as Duration
+    pub fn max_epoch_age(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.max_epoch_age_millis)
+    }
+
+    /// Get maximum messages per epoch
+    pub fn max_messages_per_epoch(&self) -> u64 {
+        self.max_messages_per_epoch
+    }
 }
 
 impl Default for GroupConfig {
     fn default() -> Self {
+        // SPEC-2 default: ChaCha20Poly1305 + SHA256 + ML-DSA-65 (0x0B01)
         Self::new(
             1,
-            CipherSuiteId::MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65,
+            CipherSuiteId::SPEC2_MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65,
         )
     }
 }
@@ -836,7 +865,11 @@ mod tests {
     // Helper function to create test signature
     fn create_test_signature() -> DebugMlDsaSignature {
         let keypair = KeyPair::generate(CipherSuite::default());
-        DebugMlDsaSignature(keypair.sign(b"test").unwrap())
+        let sig = keypair.sign(b"test").unwrap();
+        match sig {
+            crate::crypto::Signature::MlDsa(ml_dsa_sig) => DebugMlDsaSignature(ml_dsa_sig),
+            _ => panic!("Expected ML-DSA signature for default suite"),
+        }
     }
 
     #[test]
@@ -882,4 +915,27 @@ mod tests {
         };
         assert!(no_secrets.validate().is_err());
     }
+}
+
+/// Audit log entry for group operations (SPEC-2 §8)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditLogEntry {
+    /// Timestamp of the event
+    pub timestamp: std::time::SystemTime,
+    /// Type of event (group_created, epoch_advanced, member_added, etc.)
+    pub event_type: String,
+    /// Cipher suite ID used
+    pub cipher_suite_id: CipherSuiteId,
+    /// Whether cipher suite is PQC-only
+    pub is_pqc_only: bool,
+    /// Whether cipher suite is deprecated
+    pub is_deprecated: bool,
+    /// Member ID involved (if applicable)
+    pub member_id: Option<MemberId>,
+    /// Old epoch (for epoch changes)
+    pub old_epoch: Option<u64>,
+    /// New epoch (for epoch changes)
+    pub new_epoch: Option<u64>,
+    /// Additional context
+    pub context: Option<String>,
 }

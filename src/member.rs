@@ -1,17 +1,24 @@
 //! Member identity and key management for MLS groups
 
 use crate::{
-    crypto::{CipherSuite, DebugMlDsaPublicKey, DebugMlDsaSignature, KeyPair},
+    crypto::{CipherSuite, DebugMlDsaPublicKey, DebugMlDsaSignature, DebugSignature, KeyPair},
     MlsError, Result,
 };
 use bincode::Options;
-use saorsa_pqc::api::{MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature, MlKemSecretKey};
+use saorsa_pqc::api::{MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature, MlKemSecretKey, SlhDsaSecretKey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use uuid::Uuid;
+
+/// Secret signature key supporting both ML-DSA and SLH-DSA
+#[derive(Clone)]
+enum SecretSignatureKey {
+    MlDsa(MlDsaSecretKey),
+    SlhDsa(SlhDsaSecretKey),
+}
 
 /// Unique identifier for a group member
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -48,7 +55,7 @@ pub struct MemberIdentity {
     pub credential: Credential,
     pub key_package: KeyPackage,
     #[serde(skip)]
-    signing_key: Option<Arc<MlDsaSecretKey>>,
+    signing_key: Option<Arc<SecretSignatureKey>>,
     #[serde(skip)]
     kem_secret: Option<Arc<MlKemSecretKey>>,
 }
@@ -97,7 +104,10 @@ impl MemberIdentity {
     /// Create a new member identity using the provided cipher suite
     pub fn generate_with_suite(id: MemberId, suite: CipherSuite) -> Result<Self> {
         let keypair = KeyPair::generate(suite);
-        let signing_key = Arc::new(keypair.signing_key.clone());
+        let signing_key = Arc::new(match &keypair.signature_key {
+            crate::crypto::SignatureKey::MlDsa { secret, .. } => SecretSignatureKey::MlDsa(secret.clone()),
+            crate::crypto::SignatureKey::SlhDsa { secret, .. } => SecretSignatureKey::SlhDsa(secret.clone()),
+        });
         let kem_secret = Arc::new(keypair.kem_secret.clone());
         let credential = Credential::new_basic(id, None, &keypair, keypair.suite)?;
         let key_package = KeyPackage::new(keypair, credential.clone())?;
@@ -120,7 +130,10 @@ impl MemberIdentity {
         // Update credential with name using the existing cipher suite
         let suite = identity.key_package.cipher_suite;
         let keypair = KeyPair::generate(suite);
-        let signing_key = Arc::new(keypair.signing_key.clone());
+        let signing_key = Arc::new(match &keypair.signature_key {
+            crate::crypto::SignatureKey::MlDsa { secret, .. } => SecretSignatureKey::MlDsa(secret.clone()),
+            crate::crypto::SignatureKey::SlhDsa { secret, .. } => SecretSignatureKey::SlhDsa(secret.clone()),
+        });
         let kem_secret = Arc::new(keypair.kem_secret.clone());
         identity.name = Some(name.clone());
         identity.credential = Credential::new_basic(id, Some(name), &keypair, suite)?;
@@ -136,9 +149,12 @@ impl MemberIdentity {
         self.key_package.cipher_suite
     }
 
-    /// Get a reference to the signing key if available
+    /// Get a reference to the ML-DSA signing key if available (panics for SLH-DSA)
     pub fn signing_key(&self) -> Option<&MlDsaSecretKey> {
-        self.signing_key.as_deref()
+        self.signing_key.as_deref().map(|key| match key {
+            SecretSignatureKey::MlDsa(k) => k,
+            SecretSignatureKey::SlhDsa(_) => panic!("Called signing_key() on SLH-DSA identity"),
+        })
     }
 
     /// Get a reference to the KEM secret if available
@@ -147,13 +163,44 @@ impl MemberIdentity {
     }
 
     /// Verify this identity's signature on data
-    pub fn verify_signature(&self, data: &[u8], signature: &MlDsaSignature) -> bool {
-        self.key_package.verify_signature(data, signature)
+    ///
+    /// Supports both ML-DSA and SLH-DSA signatures.
+    pub fn verify_signature(&self, data: &[u8], signature: &crate::crypto::Signature) -> bool {
+        self.key_package.verify_signature(data, signature).unwrap_or(false)
     }
 
-    /// Get the member's public key for verification
-    pub fn verifying_key(&self) -> &MlDsaPublicKey {
-        &self.key_package.verifying_key.0
+    /// Sign data with this identity's signing key
+    ///
+    /// Supports both ML-DSA and SLH-DSA signatures based on the cipher suite.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if signing key is not available or signing fails.
+    pub fn sign(&self, data: &[u8]) -> Result<crate::crypto::Signature> {
+        use saorsa_pqc::api::{MlDsa, SlhDsa};
+
+        let signing_key = self.signing_key.as_ref()
+            .ok_or_else(|| MlsError::InvalidGroupState("No signing key available".to_string()))?;
+
+        match signing_key.as_ref() {
+            SecretSignatureKey::MlDsa(secret) => {
+                let ml_dsa = MlDsa::new(self.key_package.cipher_suite.ml_dsa_variant());
+                let signature = ml_dsa.sign(secret, data)
+                    .map_err(|e| MlsError::CryptoError(format!("ML-DSA signing failed: {e:?}")))?;
+                Ok(crate::crypto::Signature::MlDsa(signature))
+            }
+            SecretSignatureKey::SlhDsa(secret) => {
+                let slh_dsa = SlhDsa::new(self.key_package.cipher_suite.slh_dsa_variant());
+                let signature = slh_dsa.sign(secret, data)
+                    .map_err(|e| MlsError::CryptoError(format!("SLH-DSA signing failed: {e:?}")))?;
+                Ok(crate::crypto::Signature::SlhDsa(signature))
+            }
+        }
+    }
+
+    /// Get the member's public key bytes
+    pub fn verifying_key_bytes(&self) -> &[u8] {
+        &self.key_package.verifying_key
     }
 }
 
@@ -170,18 +217,18 @@ pub enum CredentialType {
     Basic = 1,
 }
 
-/// Member credential with ML-DSA signature
+/// Member credential with PQC signature (ML-DSA or SLH-DSA)
 ///
-/// Implements Basic credential type from RFC 9420 with post-quantum ML-DSA signatures.
-/// The credential binds a member's identity to their ML-DSA public key through a signature
+/// Implements Basic credential type from RFC 9420 with post-quantum signatures.
+/// The credential binds a member's identity to their public key through a signature
 /// over the identity data, which includes the public key itself for security.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Credential {
-    /// Basic credential with ML-DSA signed identity
+    /// Basic credential with PQC signed identity
     Basic {
         credential_type: CredentialType,
         identity: Vec<u8>,
-        signature: DebugMlDsaSignature,
+        signature: DebugSignature,
     },
 }
 
@@ -210,14 +257,14 @@ impl Credential {
 
         // SECURITY FIX: Include public key in signed data to bind credential to specific keypair
         // This prevents signature from being valid with a different public key
-        identity.extend_from_slice(&keypair.verifying_key().to_bytes());
+        identity.extend_from_slice(&keypair.verifying_key_bytes());
 
         let signature = keypair.sign(&identity)?;
 
         Ok(Self::Basic {
             credential_type: CredentialType::Basic,
             identity,
-            signature: DebugMlDsaSignature(signature),
+            signature: DebugSignature(signature),
         })
     }
 
@@ -230,13 +277,13 @@ impl Credential {
 
     /// Verify the credential is valid
     ///
-    /// Verifies that the ML-DSA signature was created by the private key corresponding
-    /// to the provided public key. The signature covers the identity data which includes
+    /// Verifies that the PQC signature was created by the private key corresponding
+    /// to the provided keypair's public key. The signature covers the identity data which includes
     /// the public key itself, binding the credential to that specific key.
     ///
     /// Security property: Prevents credential forgery by ensuring the public key in the
     /// credential matches the verifying key and that the signature is valid.
-    pub fn verify(&self, verifying_key: &MlDsaPublicKey, suite: CipherSuite) -> bool {
+    pub fn verify(&self, keypair: &KeyPair) -> bool {
         match self {
             Self::Basic {
                 identity,
@@ -245,9 +292,9 @@ impl Credential {
             } => {
                 // Verify that:
                 // 1. The provided public key matches the one in the identity data
-                // 2. The ML-DSA signature is valid for the identity data
+                // 2. The PQC signature is valid for the identity data
 
-                let key_bytes = verifying_key.to_bytes();
+                let key_bytes = keypair.verifying_key_bytes();
                 let key_len = key_bytes.len();
 
                 // Identity should end with the public key
@@ -261,10 +308,8 @@ impl Credential {
                     return false;
                 }
 
-                // Verify ML-DSA signature
-                use saorsa_pqc::api::MlDsa;
-                let ml_dsa = MlDsa::new(suite.ml_dsa_variant());
-                ml_dsa.verify(verifying_key, identity, &signature.0).is_ok()
+                // Verify PQC signature using the keypair
+                keypair.verify(identity, &signature.0)
             }
         }
     }
@@ -277,8 +322,8 @@ pub struct KeyPackage {
     pub version: u16,
     /// Cipher suite for this key package
     pub cipher_suite: CipherSuite,
-    /// Public key for message signing
-    pub verifying_key: DebugMlDsaPublicKey,
+    /// Public key for message signing (serialized as bytes)
+    pub verifying_key: Vec<u8>,
     /// Public key for key agreement (serialized as bytes)
     pub agreement_key: Vec<u8>,
     /// Member credential
@@ -286,14 +331,14 @@ pub struct KeyPackage {
     /// Extensions (reserved for future use)
     pub extensions: Vec<Extension>,
     /// Signature over the key package
-    pub signature: DebugMlDsaSignature,
+    pub signature: DebugSignature,
 }
 
 impl KeyPackage {
     /// Create a new key package
     pub fn new(keypair: KeyPair, credential: Credential) -> Result<Self> {
-        // Verify the credential against the provided verifying key
-        if !credential.verify(keypair.verifying_key(), keypair.suite) {
+        // Verify the credential against the provided keypair
+        if !credential.verify(&keypair) {
             return Err(MlsError::InvalidGroupState(
                 "invalid credential signature".to_string(),
             ));
@@ -302,33 +347,66 @@ impl KeyPackage {
         let mut package = Self {
             version: 1,
             cipher_suite: keypair.suite,
-            verifying_key: DebugMlDsaPublicKey(keypair.verifying_key().clone()),
+            verifying_key: keypair.verifying_key_bytes(),
             agreement_key: keypair.public_key().to_bytes().to_vec(),
             credential,
             extensions: Vec::new(),
-            signature: DebugMlDsaSignature(keypair.sign(&[])?), // Placeholder, will be replaced
+            signature: DebugSignature(keypair.sign(&[])?), // Placeholder, will be replaced
         };
 
         // Sign the key package
         let tbs = package.to_be_signed()?;
-        package.signature = DebugMlDsaSignature(keypair.sign(&tbs)?);
+        package.signature = DebugSignature(keypair.sign(&tbs)?);
 
         Ok(package)
     }
 
-    /// Verify the key package signature
-    pub fn verify_signature(&self, data: &[u8], signature: &MlDsaSignature) -> bool {
-        use saorsa_pqc::api::MlDsa;
-        let ml_dsa = MlDsa::new(self.cipher_suite.ml_dsa_variant());
-        ml_dsa
-            .verify(&self.verifying_key.0, data, signature)
-            .is_ok()
+    /// Verify a signature against this key package's public key
+    ///
+    /// Supports both ML-DSA and SLH-DSA signatures through unified Signature enum.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if public key parsing or signature verification fails.
+    pub fn verify_signature(&self, data: &[u8], signature: &crate::crypto::Signature) -> Result<bool> {
+        match signature {
+            crate::crypto::Signature::MlDsa(sig) => {
+                use saorsa_pqc::api::{MlDsa, MlDsaPublicKey};
+
+                let ml_dsa = MlDsa::new(self.cipher_suite.ml_dsa_variant());
+                let public_key = MlDsaPublicKey::from_bytes(
+                    self.cipher_suite.ml_dsa_variant(),
+                    &self.verifying_key
+                ).map_err(|e| MlsError::CryptoError(format!("Invalid ML-DSA public key: {e:?}")))?;
+
+                ml_dsa.verify(&public_key, data, sig)
+                    .map_err(|e| MlsError::CryptoError(format!("ML-DSA verification failed: {e:?}")))
+            }
+            crate::crypto::Signature::SlhDsa(sig) => {
+                use saorsa_pqc::api::{SlhDsa, SlhDsaPublicKey};
+
+                let slh_dsa = SlhDsa::new(self.cipher_suite.slh_dsa_variant());
+                let public_key = SlhDsaPublicKey::from_bytes(
+                    self.cipher_suite.slh_dsa_variant(),
+                    &self.verifying_key
+                ).map_err(|e| MlsError::CryptoError(format!("Invalid SLH-DSA public key: {e:?}")))?;
+
+                slh_dsa.verify(&public_key, data, sig)
+                    .map_err(|e| MlsError::CryptoError(format!("SLH-DSA verification failed: {e:?}")))
+            }
+        }
     }
 
     /// Verify the key package is self-consistent
+    ///
+    /// Verifies that the signature over the key package data is valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if serialization or verification fails.
     pub fn verify(&self) -> Result<bool> {
         let tbs = self.to_be_signed()?;
-        Ok(self.verify_signature(&tbs, &self.signature.0))
+        self.verify_signature(&tbs, &self.signature.0)
     }
 
     /// Get the data to be signed for this key package
@@ -343,7 +421,7 @@ impl KeyPackage {
         data.extend_from_slice(&suite_bytes);
 
         // Include public keys
-        data.extend_from_slice(&self.verifying_key.0.to_bytes());
+        data.extend_from_slice(&self.verifying_key);
         data.extend_from_slice(&self.agreement_key);
 
         // Include credential
@@ -735,7 +813,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(credential.verify(keypair.verifying_key(), keypair.suite));
+        assert!(credential.verify(&keypair));
     }
 
     #[test]
@@ -795,8 +873,8 @@ mod tests {
 
         // Verify keys are different between identities
         assert_ne!(
-            identity1.key_package.verifying_key.0.to_bytes(),
-            identity2.key_package.verifying_key.0.to_bytes()
+            identity1.key_package.verifying_key,
+            identity2.key_package.verifying_key
         );
     }
 

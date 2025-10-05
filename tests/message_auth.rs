@@ -2,7 +2,7 @@ use saorsa_mls::{
     CipherSuite, CipherSuiteId, GroupConfig, HandshakeMessage, KeyPair, MemberId, MemberIdentity,
     MlsGroup,
 };
-use saorsa_pqc::api::MlDsa;
+use saorsa_pqc::api::{MlDsa, MlDsaPublicKey};
 
 #[tokio::test]
 async fn application_message_signature_matches_payload() {
@@ -16,9 +16,17 @@ async fn application_message_signature_matches_payload() {
     let message = group.encrypt_message(plaintext).expect("encrypt");
 
     let ml_dsa = MlDsa::new(group.cipher_suite().ml_dsa_variant());
+
+    // Reconstruct ML-DSA public key from bytes for low-level verification
+    let pk_bytes = creator.verifying_key_bytes();
+    let public_key = MlDsaPublicKey::from_bytes(
+        group.cipher_suite().ml_dsa_variant(),
+        pk_bytes
+    ).expect("reconstruct public key");
+
     ml_dsa
         .verify(
-            creator.verifying_key(),
+            &public_key,
             &message.ciphertext,
             &message.signature.0,
         )
@@ -28,7 +36,7 @@ async fn application_message_signature_matches_payload() {
     tampered.ciphertext[0] ^= 1;
     assert!(!ml_dsa
         .verify(
-            creator.verifying_key(),
+            &public_key,
             &tampered.ciphertext,
             &tampered.signature.0,
         )
@@ -58,10 +66,17 @@ async fn welcome_message_signature_matches_payload() {
 
     let ml_dsa = MlDsa::new(group.cipher_suite().ml_dsa_variant());
 
+    // Reconstruct ML-DSA public key from bytes for low-level verification
+    let pk_bytes = creator.verifying_key_bytes();
+    let public_key = MlDsaPublicKey::from_bytes(
+        group.cipher_suite().ml_dsa_variant(),
+        pk_bytes
+    ).expect("reconstruct public key");
+
     // Signature should verify for the untampered group info
     assert!(ml_dsa
         .verify(
-            creator.verifying_key(),
+            &public_key,
             &welcome.group_info,
             &welcome.signature.0,
         )
@@ -72,7 +87,7 @@ async fn welcome_message_signature_matches_payload() {
     tampered.group_info[0] ^= 1;
     assert!(!ml_dsa
         .verify(
-            creator.verifying_key(),
+            &public_key,
             &tampered.group_info,
             &tampered.signature.0,
         )
@@ -81,23 +96,31 @@ async fn welcome_message_signature_matches_payload() {
 
 #[test]
 fn handshake_message_signature_matches_payload() {
+    use saorsa_mls::crypto::SignatureKey;
+
     let suite = CipherSuite::from_id(CipherSuiteId::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87)
         .expect("suite");
     let keypair = KeyPair::generate(suite);
     let sender = MemberId::generate();
     let content = b"handshake payload".to_vec();
 
+    // Extract ML-DSA keys from the signature key
+    let (secret, public) = match &keypair.signature_key {
+        SignatureKey::MlDsa { secret, public } => (secret, public),
+        _ => panic!("Expected ML-DSA keypair"),
+    };
+
     let message =
-        HandshakeMessage::new_signed(1, sender, content.clone(), &keypair.signing_key, suite)
+        HandshakeMessage::new_signed(1, sender, content.clone(), secret, suite)
             .expect("signed handshake");
 
     assert!(message
-        .verify_signature(keypair.verifying_key(), suite)
+        .verify_signature(public, suite)
         .expect("verification"));
 
     let mut tampered = message.clone();
     tampered.content[0] ^= 1;
     assert!(!tampered
-        .verify_signature(keypair.verifying_key(), suite)
+        .verify_signature(public, suite)
         .expect("verification"));
 }

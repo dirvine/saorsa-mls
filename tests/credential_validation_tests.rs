@@ -37,7 +37,7 @@ fn test_basic_credential_validation() {
     ).expect("create basic credential");
 
     // Verify the credential with the correct public key
-    assert!(credential.verify(keypair.verifying_key(), CipherSuite::default()),
+    assert!(credential.verify(&keypair),
         "Valid credential should verify successfully");
 
     // Verify credential type
@@ -59,7 +59,7 @@ fn test_basic_credential_wrong_key() {
     ).expect("create credential");
 
     // Should fail verification with wrong key
-    assert!(!credential.verify(keypair2.verifying_key(), CipherSuite::default()),
+    assert!(!credential.verify(&keypair2),
         "Credential should not verify with wrong public key");
 }
 
@@ -85,13 +85,13 @@ fn test_basic_credential_different_suites() {
         .expect("create 256-bit credential");
 
     // Each should verify with its own suite and key
-    assert!(cred_128.verify(kp_128.verifying_key(), suite_128),
+    assert!(cred_128.verify(&kp_128),
         "128-bit credential should verify with correct suite");
-    assert!(cred_256.verify(kp_256.verifying_key(), suite_256),
+    assert!(cred_256.verify(&kp_256),
         "256-bit credential should verify with correct suite");
 
     // Should not verify with wrong key
-    assert!(!cred_128.verify(kp_256.verifying_key(), suite_128),
+    assert!(!cred_128.verify(&kp_256),
         "128-bit credential should not verify with 256-bit key");
 }
 
@@ -103,8 +103,8 @@ fn test_trust_store_basic() {
     let kp1 = KeyPair::generate(CipherSuite::default());
     let kp2 = KeyPair::generate(CipherSuite::default());
 
-    let pk1 = kp1.verifying_key().to_bytes();
-    let pk2 = kp2.verifying_key().to_bytes();
+    let pk1 = kp1.verifying_key_bytes();
+    let pk2 = kp2.verifying_key_bytes();
 
     // Initially empty
     assert_eq!(trust_store.trusted_key_count(), 0);
@@ -150,8 +150,8 @@ fn test_credential_with_names() {
     ).expect("create credential without name");
 
     // Both should verify
-    assert!(cred_with_name.verify(keypair.verifying_key(), CipherSuite::default()));
-    assert!(cred_without_name.verify(keypair.verifying_key(), CipherSuite::default()));
+    assert!(cred_with_name.verify(&keypair));
+    assert!(cred_without_name.verify(&keypair));
 }
 
 /// Test that different member IDs produce different credentials
