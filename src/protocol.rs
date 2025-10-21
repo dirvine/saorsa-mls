@@ -503,7 +503,7 @@ impl GroupConfig {
             max_members: None,
             lifetime: None,
             max_epoch_age_millis: 24 * 3600 * 1000, // 24 hours in milliseconds per SPEC-2 §3
-            max_messages_per_epoch: 10_000, // 10,000 messages per SPEC-2 §3
+            max_messages_per_epoch: 10_000,         // 10,000 messages per SPEC-2 §3
             schema_version: 1,
         }
     }

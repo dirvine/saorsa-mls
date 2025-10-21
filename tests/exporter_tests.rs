@@ -14,18 +14,16 @@
 //! - Integration with group operations
 //! - Per-epoch secret derivation
 
-use saorsa_mls::{GroupConfig, MlsGroup, MemberId, MemberIdentity};
+use saorsa_mls::{GroupConfig, MemberId, MemberIdentity, MlsGroup};
 
 /// Test basic exporter functionality
 #[tokio::test]
 async fn test_exporter_basic() {
     let config = GroupConfig::default();
-    let creator = MemberIdentity::generate(MemberId::generate())
-        .expect("generate creator identity");
+    let creator =
+        MemberIdentity::generate(MemberId::generate()).expect("generate creator identity");
 
-    let group = MlsGroup::new(config, creator)
-        .await
-        .expect("create group");
+    let group = MlsGroup::new(config, creator).await.expect("create group");
 
     // Export a secret
     let label = "test application";
@@ -36,20 +34,24 @@ async fn test_exporter_basic() {
         .exporter(label, context, length)
         .expect("exporter should succeed");
 
-    assert_eq!(exported.len(), length, "Exported secret should have requested length");
-    assert!(exported.iter().any(|&b| b != 0), "Exported secret should not be all zeros");
+    assert_eq!(
+        exported.len(),
+        length,
+        "Exported secret should have requested length"
+    );
+    assert!(
+        exported.iter().any(|&b| b != 0),
+        "Exported secret should not be all zeros"
+    );
 }
 
 /// Test that different labels produce different secrets
 #[tokio::test]
 async fn test_exporter_label_separation() {
     let config = GroupConfig::default();
-    let creator = MemberIdentity::generate(MemberId::generate())
-        .expect("generate creator");
+    let creator = MemberIdentity::generate(MemberId::generate()).expect("generate creator");
 
-    let group = MlsGroup::new(config, creator)
-        .await
-        .expect("create group");
+    let group = MlsGroup::new(config, creator).await.expect("create group");
 
     let context = b"same context";
     let length = 32;
@@ -62,19 +64,19 @@ async fn test_exporter_label_separation() {
         .exporter("label2", context, length)
         .expect("exporter should succeed");
 
-    assert_ne!(secret1, secret2, "Different labels should produce different secrets");
+    assert_ne!(
+        secret1, secret2,
+        "Different labels should produce different secrets"
+    );
 }
 
 /// Test that different contexts produce different secrets
 #[tokio::test]
 async fn test_exporter_context_separation() {
     let config = GroupConfig::default();
-    let creator = MemberIdentity::generate(MemberId::generate())
-        .expect("generate creator");
+    let creator = MemberIdentity::generate(MemberId::generate()).expect("generate creator");
 
-    let group = MlsGroup::new(config, creator)
-        .await
-        .expect("create group");
+    let group = MlsGroup::new(config, creator).await.expect("create group");
 
     let label = "same label";
     let length = 32;
@@ -87,19 +89,19 @@ async fn test_exporter_context_separation() {
         .exporter(label, b"context2", length)
         .expect("exporter should succeed");
 
-    assert_ne!(secret1, secret2, "Different contexts should produce different secrets");
+    assert_ne!(
+        secret1, secret2,
+        "Different contexts should produce different secrets"
+    );
 }
 
 /// Test exporter is deterministic
 #[tokio::test]
 async fn test_exporter_deterministic() {
     let config = GroupConfig::default();
-    let creator = MemberIdentity::generate(MemberId::generate())
-        .expect("generate creator");
+    let creator = MemberIdentity::generate(MemberId::generate()).expect("generate creator");
 
-    let group = MlsGroup::new(config, creator)
-        .await
-        .expect("create group");
+    let group = MlsGroup::new(config, creator).await.expect("create group");
 
     let label = "determinism test";
     let context = b"test context";
@@ -113,19 +115,19 @@ async fn test_exporter_deterministic() {
         .exporter(label, context, length)
         .expect("exporter should succeed");
 
-    assert_eq!(export1, export2, "Same inputs should produce identical outputs");
+    assert_eq!(
+        export1, export2,
+        "Same inputs should produce identical outputs"
+    );
 }
 
 /// Test exporter with different lengths
 #[tokio::test]
 async fn test_exporter_different_lengths() {
     let config = GroupConfig::default();
-    let creator = MemberIdentity::generate(MemberId::generate())
-        .expect("generate creator");
+    let creator = MemberIdentity::generate(MemberId::generate()).expect("generate creator");
 
-    let group = MlsGroup::new(config, creator)
-        .await
-        .expect("create group");
+    let group = MlsGroup::new(config, creator).await.expect("create group");
 
     let label = "length test";
     let context = b"context";
@@ -141,22 +143,25 @@ async fn test_exporter_different_lengths() {
     // Per RFC 9420, HPKE-Expand-Label includes length in the label,
     // so different lengths produce independent outputs (not prefixes).
     // This is intentional for domain separation.
-    assert_ne!(&export16[..], &export32[..16],
-        "Different lengths should produce independent outputs");
-    assert_ne!(&export32[..], &export64[..32],
-        "Different lengths should produce independent outputs");
+    assert_ne!(
+        &export16[..],
+        &export32[..16],
+        "Different lengths should produce independent outputs"
+    );
+    assert_ne!(
+        &export32[..],
+        &export64[..32],
+        "Different lengths should produce independent outputs"
+    );
 }
 
 /// Test exporter changes when epoch advances
 #[tokio::test]
 async fn test_exporter_epoch_separation() {
     let config = GroupConfig::default();
-    let creator = MemberIdentity::generate(MemberId::generate())
-        .expect("generate creator");
+    let creator = MemberIdentity::generate(MemberId::generate()).expect("generate creator");
 
-    let mut group = MlsGroup::new(config, creator)
-        .await
-        .expect("create group");
+    let mut group = MlsGroup::new(config, creator).await.expect("create group");
 
     let label = "epoch test";
     let context = b"context";
@@ -168,8 +173,7 @@ async fn test_exporter_epoch_separation() {
         .expect("exporter should succeed");
 
     // Add a member to advance epoch
-    let new_member = MemberIdentity::generate(MemberId::generate())
-        .expect("generate new member");
+    let new_member = MemberIdentity::generate(MemberId::generate()).expect("generate new member");
 
     group
         .add_member(&new_member)
@@ -181,20 +185,19 @@ async fn test_exporter_epoch_separation() {
         .exporter(label, context, length)
         .expect("exporter should succeed");
 
-    assert_ne!(export_epoch0, export_epoch1,
-        "Exporter output should change with epoch");
+    assert_ne!(
+        export_epoch0, export_epoch1,
+        "Exporter output should change with epoch"
+    );
 }
 
 /// Test exporter with empty label
 #[tokio::test]
 async fn test_exporter_empty_label() {
     let config = GroupConfig::default();
-    let creator = MemberIdentity::generate(MemberId::generate())
-        .expect("generate creator");
+    let creator = MemberIdentity::generate(MemberId::generate()).expect("generate creator");
 
-    let group = MlsGroup::new(config, creator)
-        .await
-        .expect("create group");
+    let group = MlsGroup::new(config, creator).await.expect("create group");
 
     let export = group
         .exporter("", b"context", 32)
@@ -207,12 +210,9 @@ async fn test_exporter_empty_label() {
 #[tokio::test]
 async fn test_exporter_empty_context() {
     let config = GroupConfig::default();
-    let creator = MemberIdentity::generate(MemberId::generate())
-        .expect("generate creator");
+    let creator = MemberIdentity::generate(MemberId::generate()).expect("generate creator");
 
-    let group = MlsGroup::new(config, creator)
-        .await
-        .expect("create group");
+    let group = MlsGroup::new(config, creator).await.expect("create group");
 
     let export = group
         .exporter("label", b"", 32)
@@ -225,12 +225,9 @@ async fn test_exporter_empty_context() {
 #[tokio::test]
 async fn test_exporter_gossip_integration() {
     let config = GroupConfig::default();
-    let creator = MemberIdentity::generate(MemberId::generate())
-        .expect("generate creator");
+    let creator = MemberIdentity::generate(MemberId::generate()).expect("generate creator");
 
-    let group = MlsGroup::new(config, creator)
-        .await
-        .expect("create group");
+    let group = MlsGroup::new(config, creator).await.expect("create group");
 
     // Derive presence tag secret as specified in SPEC-PROD.md
     let presence_tag = group
@@ -247,20 +244,19 @@ async fn test_exporter_gossip_integration() {
     assert_eq!(epoch_salt.len(), 32);
 
     // These should be different
-    assert_ne!(presence_tag, epoch_salt,
-        "Different labels should produce different secrets");
+    assert_ne!(
+        presence_tag, epoch_salt,
+        "Different labels should produce different secrets"
+    );
 }
 
 /// Test exporter with large lengths
 #[tokio::test]
 async fn test_exporter_large_length() {
     let config = GroupConfig::default();
-    let creator = MemberIdentity::generate(MemberId::generate())
-        .expect("generate creator");
+    let creator = MemberIdentity::generate(MemberId::generate()).expect("generate creator");
 
-    let group = MlsGroup::new(config, creator)
-        .await
-        .expect("create group");
+    let group = MlsGroup::new(config, creator).await.expect("create group");
 
     // Request 1 KB of key material
     let export = group
@@ -274,12 +270,9 @@ async fn test_exporter_large_length() {
 #[tokio::test]
 async fn test_exporter_consistency_across_members() {
     let config = GroupConfig::default();
-    let creator = MemberIdentity::generate(MemberId::generate())
-        .expect("generate creator");
+    let creator = MemberIdentity::generate(MemberId::generate()).expect("generate creator");
 
-    let mut group = MlsGroup::new(config, creator)
-        .await
-        .expect("create group");
+    let mut group = MlsGroup::new(config, creator).await.expect("create group");
 
     let label = "shared secret";
     let context = b"shared context";
@@ -291,8 +284,7 @@ async fn test_exporter_consistency_across_members() {
         .expect("creator export should succeed");
 
     // Add a member
-    let new_member = MemberIdentity::generate(MemberId::generate())
-        .expect("generate new member");
+    let new_member = MemberIdentity::generate(MemberId::generate()).expect("generate new member");
 
     group
         .add_member(&new_member)
@@ -306,8 +298,10 @@ async fn test_exporter_consistency_across_members() {
         .expect("exporter should succeed");
 
     // The export changed due to epoch advancement
-    assert_ne!(creator_export, group_export_after_add,
-        "Export should change after epoch advancement");
+    assert_ne!(
+        creator_export, group_export_after_add,
+        "Export should change after epoch advancement"
+    );
 }
 
 /// Property test: Exporter is deterministic and produces requested length

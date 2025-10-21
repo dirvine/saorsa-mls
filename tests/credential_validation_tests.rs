@@ -20,7 +20,7 @@
 //! - Error handling for invalid credentials
 
 use saorsa_mls::{
-    Credential, CredentialType, CipherSuite, CipherSuiteId, KeyPair, MemberId, TrustStore,
+    CipherSuite, CipherSuiteId, Credential, CredentialType, KeyPair, MemberId, TrustStore,
 };
 
 /// Test basic credential creation and validation
@@ -34,11 +34,14 @@ fn test_basic_credential_validation() {
         Some("Alice".to_string()),
         &keypair,
         CipherSuite::default(),
-    ).expect("create basic credential");
+    )
+    .expect("create basic credential");
 
     // Verify the credential with the correct public key
-    assert!(credential.verify(&keypair),
-        "Valid credential should verify successfully");
+    assert!(
+        credential.verify(&keypair),
+        "Valid credential should verify successfully"
+    );
 
     // Verify credential type
     assert_eq!(credential.credential_type(), CredentialType::Basic);
@@ -51,16 +54,14 @@ fn test_basic_credential_wrong_key() {
     let keypair1 = KeyPair::generate(CipherSuite::default());
     let keypair2 = KeyPair::generate(CipherSuite::default());
 
-    let credential = Credential::new_basic(
-        member_id,
-        None,
-        &keypair1,
-        CipherSuite::default(),
-    ).expect("create credential");
+    let credential = Credential::new_basic(member_id, None, &keypair1, CipherSuite::default())
+        .expect("create credential");
 
     // Should fail verification with wrong key
-    assert!(!credential.verify(&keypair2),
-        "Credential should not verify with wrong public key");
+    assert!(
+        !credential.verify(&keypair2),
+        "Credential should not verify with wrong public key"
+    );
 }
 
 /// Test credential validation with different ciphersuites
@@ -68,13 +69,12 @@ fn test_basic_credential_wrong_key() {
 fn test_basic_credential_different_suites() {
     let member_id = MemberId::generate();
 
-    let suite_128 = CipherSuite::from_id(
-        CipherSuiteId::MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65
-    ).expect("valid suite");
+    let suite_128 =
+        CipherSuite::from_id(CipherSuiteId::MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65)
+            .expect("valid suite");
 
-    let suite_256 = CipherSuite::from_id(
-        CipherSuiteId::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87
-    ).expect("valid suite");
+    let suite_256 = CipherSuite::from_id(CipherSuiteId::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87)
+        .expect("valid suite");
 
     let kp_128 = KeyPair::generate(suite_128);
     let cred_128 = Credential::new_basic(member_id, None, &kp_128, suite_128)
@@ -85,14 +85,20 @@ fn test_basic_credential_different_suites() {
         .expect("create 256-bit credential");
 
     // Each should verify with its own suite and key
-    assert!(cred_128.verify(&kp_128),
-        "128-bit credential should verify with correct suite");
-    assert!(cred_256.verify(&kp_256),
-        "256-bit credential should verify with correct suite");
+    assert!(
+        cred_128.verify(&kp_128),
+        "128-bit credential should verify with correct suite"
+    );
+    assert!(
+        cred_256.verify(&kp_256),
+        "256-bit credential should verify with correct suite"
+    );
 
     // Should not verify with wrong key
-    assert!(!cred_128.verify(&kp_256),
-        "128-bit credential should not verify with 256-bit key");
+    assert!(
+        !cred_128.verify(&kp_256),
+        "128-bit credential should not verify with 256-bit key"
+    );
 }
 
 /// Test trust store basic functionality
@@ -139,15 +145,13 @@ fn test_credential_with_names() {
         Some("Bob".to_string()),
         &keypair,
         CipherSuite::default(),
-    ).expect("create credential with name");
+    )
+    .expect("create credential with name");
 
     // Without name
-    let cred_without_name = Credential::new_basic(
-        member_id,
-        None,
-        &keypair,
-        CipherSuite::default(),
-    ).expect("create credential without name");
+    let cred_without_name =
+        Credential::new_basic(member_id, None, &keypair, CipherSuite::default())
+            .expect("create credential without name");
 
     // Both should verify
     assert!(cred_with_name.verify(&keypair));
@@ -161,20 +165,15 @@ fn test_credential_member_id_binding() {
     let member_id2 = MemberId::generate();
     let keypair = KeyPair::generate(CipherSuite::default());
 
-    let cred1 = Credential::new_basic(
-        member_id1,
-        None,
-        &keypair,
-        CipherSuite::default(),
-    ).expect("create credential 1");
+    let cred1 = Credential::new_basic(member_id1, None, &keypair, CipherSuite::default())
+        .expect("create credential 1");
 
-    let cred2 = Credential::new_basic(
-        member_id2,
-        None,
-        &keypair,
-        CipherSuite::default(),
-    ).expect("create credential 2");
+    let cred2 = Credential::new_basic(member_id2, None, &keypair, CipherSuite::default())
+        .expect("create credential 2");
 
     // Credentials should be different even with same keypair
-    assert_ne!(cred1, cred2, "Different member IDs should produce different credentials");
+    assert_ne!(
+        cred1, cred2,
+        "Different member IDs should produce different credentials"
+    );
 }

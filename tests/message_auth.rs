@@ -19,27 +19,17 @@ async fn application_message_signature_matches_payload() {
 
     // Reconstruct ML-DSA public key from bytes for low-level verification
     let pk_bytes = creator.verifying_key_bytes();
-    let public_key = MlDsaPublicKey::from_bytes(
-        group.cipher_suite().ml_dsa_variant(),
-        pk_bytes
-    ).expect("reconstruct public key");
+    let public_key = MlDsaPublicKey::from_bytes(group.cipher_suite().ml_dsa_variant(), pk_bytes)
+        .expect("reconstruct public key");
 
     ml_dsa
-        .verify(
-            &public_key,
-            &message.ciphertext,
-            &message.signature.0,
-        )
+        .verify(&public_key, &message.ciphertext, &message.signature.0)
         .expect("signature should verify");
 
     let mut tampered = message.clone();
     tampered.ciphertext[0] ^= 1;
     assert!(!ml_dsa
-        .verify(
-            &public_key,
-            &tampered.ciphertext,
-            &tampered.signature.0,
-        )
+        .verify(&public_key, &tampered.ciphertext, &tampered.signature.0,)
         .expect("signature verification should succeed"));
 
     // Decrypt succeeds for untampered message
@@ -68,29 +58,19 @@ async fn welcome_message_signature_matches_payload() {
 
     // Reconstruct ML-DSA public key from bytes for low-level verification
     let pk_bytes = creator.verifying_key_bytes();
-    let public_key = MlDsaPublicKey::from_bytes(
-        group.cipher_suite().ml_dsa_variant(),
-        pk_bytes
-    ).expect("reconstruct public key");
+    let public_key = MlDsaPublicKey::from_bytes(group.cipher_suite().ml_dsa_variant(), pk_bytes)
+        .expect("reconstruct public key");
 
     // Signature should verify for the untampered group info
     assert!(ml_dsa
-        .verify(
-            &public_key,
-            &welcome.group_info,
-            &welcome.signature.0,
-        )
+        .verify(&public_key, &welcome.group_info, &welcome.signature.0,)
         .expect("verification call"));
 
     // Tampering the group info should invalidate the signature
     let mut tampered = welcome.clone();
     tampered.group_info[0] ^= 1;
     assert!(!ml_dsa
-        .verify(
-            &public_key,
-            &tampered.group_info,
-            &tampered.signature.0,
-        )
+        .verify(&public_key, &tampered.group_info, &tampered.signature.0,)
         .expect("verification call"));
 }
 
@@ -110,9 +90,8 @@ fn handshake_message_signature_matches_payload() {
         _ => panic!("Expected ML-DSA keypair"),
     };
 
-    let message =
-        HandshakeMessage::new_signed(1, sender, content.clone(), secret, suite)
-            .expect("signed handshake");
+    let message = HandshakeMessage::new_signed(1, sender, content.clone(), secret, suite)
+        .expect("signed handshake");
 
     assert!(message
         .verify_signature(public, suite)

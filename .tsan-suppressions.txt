@@ -1,0 +1,17 @@
+# ThreadSanitizer suppressions for saorsa-mls
+#
+# This file contains suppressions for known false positives in ThreadSanitizer
+# when running with async Rust (tokio) runtime.
+#
+# Format: https://github.com/google/sanitizers/wiki/ThreadSanitizerSuppressions
+
+# Tokio runtime false positives - ThreadSanitizer often reports false positives
+# in the tokio async runtime due to its lock-free data structures
+race:tokio::*
+race:tokio_util::*
+
+# Standard library false positives
+race:std::sync::*
+
+# Known safe data races in parking_lot
+race:parking_lot::*

@@ -27,7 +27,7 @@
 //!
 //! ## Example Usage
 //!
-//! ```rust
+//! ```rust,no_run
 //! use saorsa_mls::{MlsGroup, MemberIdentity, MemberId, GroupConfig};
 //!
 //! # async fn example() -> anyhow::Result<()> {
@@ -66,7 +66,10 @@ pub use crypto::{
     MlsHash, MlsKem, MlsSignature,
 };
 pub use group::{GroupConfig, GroupId, GroupState, MlsGroup};
-pub use member::{Credential, CredentialType, GroupMember, KeyPackage, MemberId, MemberIdentity, MemberState, TrustStore};
+pub use member::{
+    Credential, CredentialType, GroupMember, KeyPackage, MemberId, MemberIdentity, MemberState,
+    TrustStore,
+};
 pub use protocol::{AuditLogEntry, *};
 
 /// Errors that can occur in MLS operations

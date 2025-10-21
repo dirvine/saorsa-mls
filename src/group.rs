@@ -7,7 +7,8 @@ use crate::{
     crypto::{labels, random_bytes, AeadCipher, CipherSuite, Hash, KeySchedule},
     member::{MemberId, MemberIdentity, MemberRegistry},
     protocol::{
-        ApplicationMessage, AuditLogEntry, EncryptedGroupSecrets, GroupInfo, ProtocolStateMachine, WelcomeMessage,
+        ApplicationMessage, AuditLogEntry, EncryptedGroupSecrets, GroupInfo, ProtocolStateMachine,
+        WelcomeMessage,
     },
     EpochNumber, MlsError, MlsStats, Result,
 };
@@ -124,9 +125,14 @@ impl MlsGroup {
             member_id: Some(creator.id),
             old_epoch: None,
             new_epoch: Some(0),
-            context: Some(format!("Group created with cipher suite 0x{:04X} ({})",
+            context: Some(format!(
+                "Group created with cipher suite 0x{:04X} ({})",
                 config.cipher_suite.as_u16(),
-                if cipher_suite.is_pqc_only() { "PQC-only" } else { "deprecated" }
+                if cipher_suite.is_pqc_only() {
+                    "PQC-only"
+                } else {
+                    "deprecated"
+                }
             )),
         });
 
@@ -240,7 +246,7 @@ impl MlsGroup {
             crate::crypto::Signature::MlDsa(sig) => sig,
             crate::crypto::Signature::SlhDsa(_) => {
                 return Err(MlsError::ProtocolError(
-                    "Welcome messages with SLH-DSA not yet supported".to_string()
+                    "Welcome messages with SLH-DSA not yet supported".to_string(),
                 ));
             }
         };
@@ -370,7 +376,7 @@ impl MlsGroup {
             crate::crypto::Signature::MlDsa(sig) => sig,
             crate::crypto::Signature::SlhDsa(_) => {
                 return Err(MlsError::ProtocolError(
-                    "Application messages with SLH-DSA not yet supported".to_string()
+                    "Application messages with SLH-DSA not yet supported".to_string(),
                 ));
             }
         };
@@ -426,8 +432,9 @@ impl MlsGroup {
                 .ok_or(MlsError::MemberNotFound(message.sender))?;
             MlDsaPublicKey::from_bytes(
                 self.cipher_suite.ml_dsa_variant(),
-                &member.identity.key_package.verifying_key
-            ).expect("Invalid ML-DSA public key")
+                &member.identity.key_package.verifying_key,
+            )
+            .expect("Invalid ML-DSA public key")
         };
         let ml_dsa = MlDsa::new(self.cipher_suite.ml_dsa_variant());
         let signature_valid = ml_dsa
@@ -561,7 +568,10 @@ impl MlsGroup {
             member_id: None,
             old_epoch: Some(old_epoch),
             new_epoch: Some(new_epoch),
-            context: Some(format!("Epoch advanced: {} -> {} (membership change)", old_epoch, new_epoch)),
+            context: Some(format!(
+                "Epoch advanced: {} -> {} (membership change)",
+                old_epoch, new_epoch
+            )),
         });
 
         Ok(())
@@ -668,8 +678,8 @@ impl MlsGroup {
         let epoch_age = self.epoch_age();
         let message_count = self.epoch_message_count();
 
-        epoch_age >= self.config.max_epoch_age() ||
-        message_count >= self.config.max_messages_per_epoch()
+        epoch_age >= self.config.max_epoch_age()
+            || message_count >= self.config.max_messages_per_epoch()
     }
 
     /// Perform epoch update / rekey - SPEC-2 §3
@@ -697,7 +707,10 @@ impl MlsGroup {
             member_id: None,
             old_epoch: Some(old_epoch),
             new_epoch: Some(new_epoch),
-            context: Some(format!("Automatic rekey: epoch {} -> {}", old_epoch, new_epoch)),
+            context: Some(format!(
+                "Automatic rekey: epoch {} -> {}",
+                old_epoch, new_epoch
+            )),
         });
 
         Ok(())
@@ -768,9 +781,7 @@ impl MlsGroup {
             self.key_schedule
                 .read()
                 .clone()
-                .ok_or_else(|| {
-                    MlsError::CryptoError("Key schedule not initialized".to_string())
-                })?
+                .ok_or_else(|| MlsError::CryptoError("Key schedule not initialized".to_string()))?
         }; // Lock released here
 
         // Derive the exported secret using RFC 9420 exporter construction

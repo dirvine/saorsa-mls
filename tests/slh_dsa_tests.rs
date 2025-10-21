@@ -12,8 +12,9 @@ use saorsa_mls::{CipherSuite, CipherSuiteId, GroupConfig, MemberId, MemberIdenti
 #[tokio::test]
 async fn test_slh_dsa_keypair_generation() {
     let suite = CipherSuite::from_id(
-        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192
-    ).expect("0x0B03 suite should exist");
+        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192,
+    )
+    .expect("0x0B03 suite should exist");
 
     let identity = MemberIdentity::generate_with_suite(MemberId::generate(), suite)
         .expect("should generate SLH-DSA identity");
@@ -25,14 +26,14 @@ async fn test_slh_dsa_keypair_generation() {
 /// Test that SLH-DSA works with MLS group
 #[tokio::test]
 async fn test_slh_dsa_mls_group() {
-    let config = GroupConfig::default()
-        .with_cipher_suite(CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192);
+    let config = GroupConfig::default().with_cipher_suite(
+        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192,
+    );
 
-    let suite = CipherSuite::from_id(config.cipher_suite)
-        .expect("suite exists");
+    let suite = CipherSuite::from_id(config.cipher_suite).expect("suite exists");
 
-    let creator = MemberIdentity::generate_with_suite(MemberId::generate(), suite)
-        .expect("create identity");
+    let creator =
+        MemberIdentity::generate_with_suite(MemberId::generate(), suite).expect("create identity");
 
     let group = MlsGroup::new(config, creator)
         .await
@@ -46,8 +47,9 @@ async fn test_slh_dsa_mls_group() {
 #[test]
 fn test_0x0b03_cipher_suite_config() {
     let suite = CipherSuite::from_id(
-        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192
-    ).expect("0x0B03 suite should exist");
+        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192,
+    )
+    .expect("0x0B03 suite should exist");
 
     // Verify it's PQC-only
     assert!(suite.is_pqc_only(), "0x0B03 should be PQC-only");
@@ -82,10 +84,13 @@ fn test_slh_dsa_suite_id() {
 #[test]
 fn test_slh_dsa_in_registry() {
     let suite = CipherSuite::from_id(
-        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192
+        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192,
     );
 
-    assert!(suite.is_some(), "0x0B03 SLH-DSA suite should be in registry");
+    assert!(
+        suite.is_some(),
+        "0x0B03 SLH-DSA suite should be in registry"
+    );
 }
 
 /// Test that SLH-DSA works with member add/remove operations
@@ -94,25 +99,24 @@ fn test_slh_dsa_in_registry() {
 #[tokio::test]
 #[ignore = "SLH-DSA not yet supported in Welcome/Application messages - tracked separately"]
 async fn test_slh_dsa_member_operations() {
-    let config = GroupConfig::default()
-        .with_cipher_suite(CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192);
+    let config = GroupConfig::default().with_cipher_suite(
+        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192,
+    );
 
-    let suite = CipherSuite::from_id(config.cipher_suite)
-        .expect("suite exists");
+    let suite = CipherSuite::from_id(config.cipher_suite).expect("suite exists");
 
-    let creator = MemberIdentity::generate_with_suite(MemberId::generate(), suite)
-        .expect("create identity");
+    let creator =
+        MemberIdentity::generate_with_suite(MemberId::generate(), suite).expect("create identity");
 
-    let mut group = MlsGroup::new(config, creator)
-        .await
-        .expect("create group");
+    let mut group = MlsGroup::new(config, creator).await.expect("create group");
 
     // Add a member
-    let new_member = MemberIdentity::generate_with_suite(MemberId::generate(), suite)
-        .expect("create member");
+    let new_member =
+        MemberIdentity::generate_with_suite(MemberId::generate(), suite).expect("create member");
     let member_id = new_member.id;
 
-    group.add_member(&new_member)
+    group
+        .add_member(&new_member)
         .await
         .expect("add member should succeed");
 
@@ -120,12 +124,17 @@ async fn test_slh_dsa_member_operations() {
     assert_eq!(group.epoch(), 1, "Epoch should advance after adding member");
 
     // Remove the member
-    group.remove_member(&member_id)
+    group
+        .remove_member(&member_id)
         .await
         .expect("remove member should succeed");
 
     // Verify member was removed by checking epoch changed again
-    assert_eq!(group.epoch(), 2, "Epoch should advance after removing member");
+    assert_eq!(
+        group.epoch(),
+        2,
+        "Epoch should advance after removing member"
+    );
 }
 
 /// Test SPEC-2 compliance for optional SLH-DSA suite
@@ -134,8 +143,9 @@ fn test_spec2_slh_dsa_compliance() {
     // SPEC-2 §2: "0x0B03: MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192 // optional"
 
     let suite = CipherSuite::from_id(
-        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192
-    ).expect("SPEC-2 §2 requires 0x0B03 suite to exist");
+        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192,
+    )
+    .expect("SPEC-2 §2 requires 0x0B03 suite to exist");
 
     // Verify SPEC-2 compliance
     assert!(
@@ -155,8 +165,9 @@ fn test_spec2_slh_dsa_compliance() {
 #[test]
 fn test_slh_dsa_variant() {
     let suite = CipherSuite::from_id(
-        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192
-    ).expect("suite exists");
+        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192,
+    )
+    .expect("suite exists");
 
     assert!(suite.uses_slh_dsa(), "Should use SLH-DSA");
 

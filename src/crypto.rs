@@ -11,8 +11,8 @@ use saorsa_pqc::api::{
     hpke::{HpkeConfig, HpkeContext as PqcHpkeContext, HpkeRecipient, HpkeSender},
     kdf::KdfAlgorithm,
     MlDsa, MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature, MlDsaVariant, MlKem, MlKemCiphertext,
-    MlKemPublicKey, MlKemSecretKey, MlKemSharedSecret, MlKemVariant,
-    SlhDsa, SlhDsaPublicKey, SlhDsaSecretKey, SlhDsaSignature, SlhDsaVariant,
+    MlKemPublicKey, MlKemSecretKey, MlKemSharedSecret, MlKemVariant, SlhDsa, SlhDsaPublicKey,
+    SlhDsaSecretKey, SlhDsaSignature, SlhDsaVariant,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -29,16 +29,28 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 pub enum CipherSuiteId {
     // SPEC-PROD registry (0x0A** - includes hybrid)
     /// MLS_128_MLKEM768_AES128GCM_SHA256_MLDSA65 (SPEC-PROD)
-    #[deprecated(since = "0.3.0", note = "Use SPEC2_MLS_128_MLKEM768_AES128GCM_SHA256_MLDSA65 (0x0B01) for PQC-only")]
+    #[deprecated(
+        since = "0.3.0",
+        note = "Use SPEC2_MLS_128_MLKEM768_AES128GCM_SHA256_MLDSA65 (0x0B01) for PQC-only"
+    )]
     MLS_128_MLKEM768_AES128GCM_SHA256_MLDSA65 = 0x0A01,
     /// MLS_128_HYBRID_X25519+MLKEM768_AES128GCM_SHA256_MLDSA65 (SPEC-PROD hybrid)
-    #[deprecated(since = "0.3.0", note = "Hybrid suites not allowed in SPEC-2 PQC-only mode")]
+    #[deprecated(
+        since = "0.3.0",
+        note = "Hybrid suites not allowed in SPEC-2 PQC-only mode"
+    )]
     MLS_128_HYBRID_X25519_MLKEM768_AES128GCM_SHA256_MLDSA65 = 0x0A02,
     /// MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87 (SPEC-PROD)
-    #[deprecated(since = "0.3.0", note = "Use SPEC2_MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87 (0x0B02) for PQC-only")]
+    #[deprecated(
+        since = "0.3.0",
+        note = "Use SPEC2_MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87 (0x0B02) for PQC-only"
+    )]
     MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87 = 0x0A03,
     /// MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65 (SPEC-PROD)
-    #[deprecated(since = "0.3.0", note = "Use SPEC2_MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65 (0x0B01) for PQC-only")]
+    #[deprecated(
+        since = "0.3.0",
+        note = "Use SPEC2_MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65 (0x0B01) for PQC-only"
+    )]
     MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65 = 0x0A04,
 
     // SPEC-2 PQC-only registry (0x0B** - ChaCha20Poly1305 only, no hybrids, production)
@@ -65,7 +77,10 @@ pub enum MlsKem {
     MlKem768,
     MlKem1024,
     /// Hybrid X25519+MLKEM768 (SPEC-PROD only, not allowed in SPEC-2 PQC-only mode)
-    #[deprecated(since = "0.3.0", note = "Hybrid KEMs not allowed in SPEC-2 PQC-only mode")]
+    #[deprecated(
+        since = "0.3.0",
+        note = "Hybrid KEMs not allowed in SPEC-2 PQC-only mode"
+    )]
     HybridX25519MlKem768,
 }
 
@@ -322,7 +337,6 @@ const REGISTRY: [CipherSuite; 7] = [
         MlsAead::ChaCha20Poly1305,
         MlsHash::Sha256,
     ),
-
     // SPEC-2 PQC-only registry (0x0B** - ChaCha20Poly1305 only, no hybrids, production)
     CipherSuite::new(
         CipherSuiteId::SPEC2_MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65,
@@ -531,7 +545,9 @@ impl std::fmt::Debug for DebugSignature {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.0 {
             Signature::MlDsa(sig) => write!(f, "MlDsaSignature(<{} bytes>)", sig.to_bytes().len()),
-            Signature::SlhDsa(sig) => write!(f, "SlhDsaSignature(<{} bytes>)", sig.to_bytes().len()),
+            Signature::SlhDsa(sig) => {
+                write!(f, "SlhDsaSignature(<{} bytes>)", sig.to_bytes().len())
+            }
         }
     }
 }
@@ -677,7 +693,9 @@ impl KeyPair {
         match &self.signature_key {
             SignatureKey::MlDsa { public, .. } => public,
             SignatureKey::SlhDsa { .. } => {
-                panic!("Called verifying_key() on SLH-DSA keypair - use verifying_key_bytes() instead")
+                panic!(
+                    "Called verifying_key() on SLH-DSA keypair - use verifying_key_bytes() instead"
+                )
             }
         }
     }
@@ -1235,8 +1253,10 @@ mod tests {
 
         // Test with wrong message - should NOT verify
         let wrong_message = b"wrong message";
-        assert!(!kp.verify(wrong_message, &signature),
-            "Signature should not verify with wrong message");
+        assert!(
+            !kp.verify(wrong_message, &signature),
+            "Signature should not verify with wrong message"
+        );
     }
 
     #[test]
@@ -1257,8 +1277,10 @@ mod tests {
     #[test]
     fn test_aead_encryption() {
         // Use ChaCha20Poly1305 suite since AEAD implementation currently only supports that
-        let suite = CipherSuite::from_id(CipherSuiteId::SPEC2_MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65)
-            .expect("ChaCha20 suite should exist");
+        let suite = CipherSuite::from_id(
+            CipherSuiteId::SPEC2_MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65,
+        )
+        .expect("ChaCha20 suite should exist");
         let key = random_bytes(suite.key_size()); // Use correct key size for suite
         let cipher = AeadCipher::new(key, suite).unwrap();
         let nonce = random_bytes(12);
@@ -1310,8 +1332,10 @@ mod tests {
 
     #[test]
     fn test_spec2_suite_0xb01_chacha_sha256() {
-        let suite = CipherSuite::from_id(CipherSuiteId::SPEC2_MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65)
-            .expect("Suite 0x0B01 should exist");
+        let suite = CipherSuite::from_id(
+            CipherSuiteId::SPEC2_MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65,
+        )
+        .expect("Suite 0x0B01 should exist");
         assert_eq!(suite.key_size(), 32, "ChaCha20 key size");
         assert_eq!(suite.hash_size(), 32, "SHA256 hash size");
         assert_eq!(suite.aead(), MlsAead::ChaCha20Poly1305);
@@ -1322,10 +1346,16 @@ mod tests {
 
     #[test]
     fn test_spec2_suite_0xb02_chacha_sha512() {
-        let suite = CipherSuite::from_id(CipherSuiteId::SPEC2_MLS_256_MLKEM1024_CHACHA20POLY1305_SHA512_MLDSA87)
-            .expect("Suite 0x0B02 should exist");
+        let suite = CipherSuite::from_id(
+            CipherSuiteId::SPEC2_MLS_256_MLKEM1024_CHACHA20POLY1305_SHA512_MLDSA87,
+        )
+        .expect("Suite 0x0B02 should exist");
         assert_eq!(suite.kem(), MlsKem::MlKem1024, "High-security ML-KEM-1024");
-        assert_eq!(suite.signature(), MlsSignature::MlDsa87, "High-security ML-DSA-87");
+        assert_eq!(
+            suite.signature(),
+            MlsSignature::MlDsa87,
+            "High-security ML-DSA-87"
+        );
         assert_eq!(suite.aead(), MlsAead::ChaCha20Poly1305);
         assert_eq!(suite.hash(), MlsHash::Sha512);
         assert_eq!(suite.key_size(), 32, "ChaCha20 key size");
@@ -1336,8 +1366,10 @@ mod tests {
     #[test]
     #[allow(deprecated)]
     fn test_hybrid_suite_not_pqc_only() {
-        let suite = CipherSuite::from_id(CipherSuiteId::MLS_128_HYBRID_X25519_MLKEM768_AES128GCM_SHA256_MLDSA65)
-            .expect("Hybrid suite should exist for backwards compat");
+        let suite = CipherSuite::from_id(
+            CipherSuiteId::MLS_128_HYBRID_X25519_MLKEM768_AES128GCM_SHA256_MLDSA65,
+        )
+        .expect("Hybrid suite should exist for backwards compat");
         assert!(!suite.is_pqc_only(), "Hybrid suite must NOT be PQC-only");
         assert!(!suite.is_spec2(), "Hybrid suite is SPEC-PROD");
         assert!(suite.is_deprecated(), "Hybrid suite should be deprecated");
@@ -1353,8 +1385,8 @@ mod tests {
         ];
 
         for id in &deprecated_ids {
-            let suite = CipherSuite::from_id(*id)
-                .expect("Deprecated suite should still be in registry");
+            let suite =
+                CipherSuite::from_id(*id).expect("Deprecated suite should still be in registry");
             assert!(suite.is_deprecated(), "Suite {:?} should be deprecated", id);
             assert!(!suite.is_spec2(), "Suite {:?} is not SPEC-2", id);
             // Note: Deprecated PQC-only suites (0x0A01, 0x0A03, 0x0A04) are actually PQC-only,
@@ -1371,8 +1403,7 @@ mod tests {
         ];
 
         for id in &spec2_ids {
-            let suite = CipherSuite::from_id(*id)
-                .expect("SPEC-2 suite should exist");
+            let suite = CipherSuite::from_id(*id).expect("SPEC-2 suite should exist");
             assert!(
                 suite.is_pqc_only(),
                 "SPEC-2 suite {:?} must be PQC-only",
@@ -1444,7 +1475,11 @@ mod tests {
             // Test signing
             let message = b"test message for SPEC-2";
             let signature = kp.sign(message).expect("Signing should succeed");
-            assert!(kp.verify(message, &signature), "Verification should succeed for suite {:?}", id);
+            assert!(
+                kp.verify(message, &signature),
+                "Verification should succeed for suite {:?}",
+                id
+            );
         }
     }
 }

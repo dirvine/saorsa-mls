@@ -5,7 +5,9 @@ use crate::{
     MlsError, Result,
 };
 use bincode::Options;
-use saorsa_pqc::api::{MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature, MlKemSecretKey, SlhDsaSecretKey};
+use saorsa_pqc::api::{
+    MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature, MlKemSecretKey, SlhDsaSecretKey,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -105,8 +107,12 @@ impl MemberIdentity {
     pub fn generate_with_suite(id: MemberId, suite: CipherSuite) -> Result<Self> {
         let keypair = KeyPair::generate(suite);
         let signing_key = Arc::new(match &keypair.signature_key {
-            crate::crypto::SignatureKey::MlDsa { secret, .. } => SecretSignatureKey::MlDsa(secret.clone()),
-            crate::crypto::SignatureKey::SlhDsa { secret, .. } => SecretSignatureKey::SlhDsa(secret.clone()),
+            crate::crypto::SignatureKey::MlDsa { secret, .. } => {
+                SecretSignatureKey::MlDsa(secret.clone())
+            }
+            crate::crypto::SignatureKey::SlhDsa { secret, .. } => {
+                SecretSignatureKey::SlhDsa(secret.clone())
+            }
         });
         let kem_secret = Arc::new(keypair.kem_secret.clone());
         let credential = Credential::new_basic(id, None, &keypair, keypair.suite)?;
@@ -131,8 +137,12 @@ impl MemberIdentity {
         let suite = identity.key_package.cipher_suite;
         let keypair = KeyPair::generate(suite);
         let signing_key = Arc::new(match &keypair.signature_key {
-            crate::crypto::SignatureKey::MlDsa { secret, .. } => SecretSignatureKey::MlDsa(secret.clone()),
-            crate::crypto::SignatureKey::SlhDsa { secret, .. } => SecretSignatureKey::SlhDsa(secret.clone()),
+            crate::crypto::SignatureKey::MlDsa { secret, .. } => {
+                SecretSignatureKey::MlDsa(secret.clone())
+            }
+            crate::crypto::SignatureKey::SlhDsa { secret, .. } => {
+                SecretSignatureKey::SlhDsa(secret.clone())
+            }
         });
         let kem_secret = Arc::new(keypair.kem_secret.clone());
         identity.name = Some(name.clone());
@@ -166,7 +176,9 @@ impl MemberIdentity {
     ///
     /// Supports both ML-DSA and SLH-DSA signatures.
     pub fn verify_signature(&self, data: &[u8], signature: &crate::crypto::Signature) -> bool {
-        self.key_package.verify_signature(data, signature).unwrap_or(false)
+        self.key_package
+            .verify_signature(data, signature)
+            .unwrap_or(false)
     }
 
     /// Sign data with this identity's signing key
@@ -179,19 +191,23 @@ impl MemberIdentity {
     pub fn sign(&self, data: &[u8]) -> Result<crate::crypto::Signature> {
         use saorsa_pqc::api::{MlDsa, SlhDsa};
 
-        let signing_key = self.signing_key.as_ref()
+        let signing_key = self
+            .signing_key
+            .as_ref()
             .ok_or_else(|| MlsError::InvalidGroupState("No signing key available".to_string()))?;
 
         match signing_key.as_ref() {
             SecretSignatureKey::MlDsa(secret) => {
                 let ml_dsa = MlDsa::new(self.key_package.cipher_suite.ml_dsa_variant());
-                let signature = ml_dsa.sign(secret, data)
+                let signature = ml_dsa
+                    .sign(secret, data)
                     .map_err(|e| MlsError::CryptoError(format!("ML-DSA signing failed: {e:?}")))?;
                 Ok(crate::crypto::Signature::MlDsa(signature))
             }
             SecretSignatureKey::SlhDsa(secret) => {
                 let slh_dsa = SlhDsa::new(self.key_package.cipher_suite.slh_dsa_variant());
-                let signature = slh_dsa.sign(secret, data)
+                let signature = slh_dsa
+                    .sign(secret, data)
                     .map_err(|e| MlsError::CryptoError(format!("SLH-DSA signing failed: {e:?}")))?;
                 Ok(crate::crypto::Signature::SlhDsa(signature))
             }
@@ -271,7 +287,9 @@ impl Credential {
     /// Get the credential type (always Basic in this implementation)
     pub fn credential_type(&self) -> CredentialType {
         match self {
-            Self::Basic { credential_type, .. } => *credential_type,
+            Self::Basic {
+                credential_type, ..
+            } => *credential_type,
         }
     }
 
@@ -368,7 +386,11 @@ impl KeyPackage {
     /// # Errors
     ///
     /// Returns error if public key parsing or signature verification fails.
-    pub fn verify_signature(&self, data: &[u8], signature: &crate::crypto::Signature) -> Result<bool> {
+    pub fn verify_signature(
+        &self,
+        data: &[u8],
+        signature: &crate::crypto::Signature,
+    ) -> Result<bool> {
         match signature {
             crate::crypto::Signature::MlDsa(sig) => {
                 use saorsa_pqc::api::{MlDsa, MlDsaPublicKey};
@@ -376,11 +398,13 @@ impl KeyPackage {
                 let ml_dsa = MlDsa::new(self.cipher_suite.ml_dsa_variant());
                 let public_key = MlDsaPublicKey::from_bytes(
                     self.cipher_suite.ml_dsa_variant(),
-                    &self.verifying_key
-                ).map_err(|e| MlsError::CryptoError(format!("Invalid ML-DSA public key: {e:?}")))?;
+                    &self.verifying_key,
+                )
+                .map_err(|e| MlsError::CryptoError(format!("Invalid ML-DSA public key: {e:?}")))?;
 
-                ml_dsa.verify(&public_key, data, sig)
-                    .map_err(|e| MlsError::CryptoError(format!("ML-DSA verification failed: {e:?}")))
+                ml_dsa.verify(&public_key, data, sig).map_err(|e| {
+                    MlsError::CryptoError(format!("ML-DSA verification failed: {e:?}"))
+                })
             }
             crate::crypto::Signature::SlhDsa(sig) => {
                 use saorsa_pqc::api::{SlhDsa, SlhDsaPublicKey};
@@ -388,11 +412,13 @@ impl KeyPackage {
                 let slh_dsa = SlhDsa::new(self.cipher_suite.slh_dsa_variant());
                 let public_key = SlhDsaPublicKey::from_bytes(
                     self.cipher_suite.slh_dsa_variant(),
-                    &self.verifying_key
-                ).map_err(|e| MlsError::CryptoError(format!("Invalid SLH-DSA public key: {e:?}")))?;
+                    &self.verifying_key,
+                )
+                .map_err(|e| MlsError::CryptoError(format!("Invalid SLH-DSA public key: {e:?}")))?;
 
-                slh_dsa.verify(&public_key, data, sig)
-                    .map_err(|e| MlsError::CryptoError(format!("SLH-DSA verification failed: {e:?}")))
+                slh_dsa.verify(&public_key, data, sig).map_err(|e| {
+                    MlsError::CryptoError(format!("SLH-DSA verification failed: {e:?}"))
+                })
             }
         }
     }
@@ -756,7 +782,9 @@ impl TrustStore {
 
     /// Check if a public key is trusted
     pub fn is_trusted(&self, public_key: &[u8]) -> bool {
-        self.trusted_keys.iter().any(|key| key.as_slice() == public_key)
+        self.trusted_keys
+            .iter()
+            .any(|key| key.as_slice() == public_key)
     }
 }
 
