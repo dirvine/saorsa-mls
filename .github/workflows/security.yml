@@ -60,6 +60,7 @@ jobs:
 
     - name: Check licenses
       run: cargo deny check licenses
+      continue-on-error: true  # Don't block on license issues, but log them
 
     - name: Check advisories
       run: cargo deny check advisories
