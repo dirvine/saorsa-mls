@@ -101,7 +101,6 @@ jobs:
 
     - name: Run Semgrep
       uses: semgrep/semgrep-action@v1
-      if: ${{ secrets.SEMGREP_APP_TOKEN != '' }}
       with:
         config: >-
           p/security-audit
