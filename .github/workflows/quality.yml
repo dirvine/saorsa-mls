@@ -165,10 +165,10 @@ jobs:
 
     - name: Install scc
       run: |
-        wget https://github.com/boyter/scc/releases/download/v3.1.0/scc_Linux_x86_64.tar.gz
-        tar -xzf scc_Linux_x86_64.tar.gz
-        sudo mv scc /usr/local/bin/
-        rm scc_Linux_x86_64.tar.gz
+        wget -q https://github.com/boyter/scc/releases/download/v3.1.0/scc_Linux_x86_64.tar.gz || exit 0
+        tar -xzf scc_Linux_x86_64.tar.gz || exit 0
+        sudo mv scc /usr/local/bin/ || sudo cp scc /usr/local/bin/ || exit 0
+        rm -f scc_Linux_x86_64.tar.gz
       continue-on-error: true
 
     - name: Analyze code metrics

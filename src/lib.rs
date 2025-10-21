@@ -27,7 +27,7 @@
 //!
 //! ## Example Usage
 //!
-//! ```rust
+//! ```rust,no_run
 //! use saorsa_mls::{MlsGroup, MemberIdentity, MemberId, GroupConfig};
 //!
 //! # async fn example() -> anyhow::Result<()> {
