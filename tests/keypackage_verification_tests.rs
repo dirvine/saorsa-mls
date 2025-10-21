@@ -6,27 +6,22 @@
 //! Tests proper signature verification for KeyPackage using TDD approach.
 
 use saorsa_mls::{
-    CipherSuite, CipherSuiteId, KeyPair, MemberId,
     member::{Credential, KeyPackage},
+    CipherSuite, CipherSuiteId, KeyPair, MemberId,
 };
 
 /// Test ML-DSA KeyPackage verification (should already work)
 #[test]
 fn test_ml_dsa_keypackage_verification_valid() {
-    let suite = CipherSuite::from_id(
-        CipherSuiteId::SPEC2_MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65
-    ).expect("ML-DSA suite exists");
+    let suite =
+        CipherSuite::from_id(CipherSuiteId::SPEC2_MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65)
+            .expect("ML-DSA suite exists");
 
     let keypair = KeyPair::generate(suite);
-    let credential = Credential::new_basic(
-        MemberId::generate(),
-        None,
-        &keypair,
-        suite
-    ).expect("create credential");
+    let credential = Credential::new_basic(MemberId::generate(), None, &keypair, suite)
+        .expect("create credential");
 
-    let key_package = KeyPackage::new(keypair, credential)
-        .expect("create key package");
+    let key_package = KeyPackage::new(keypair, credential).expect("create key package");
 
     // Should verify successfully
     assert!(
@@ -39,19 +34,15 @@ fn test_ml_dsa_keypackage_verification_valid() {
 #[test]
 fn test_slh_dsa_keypackage_verification_valid() {
     let suite = CipherSuite::from_id(
-        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192
-    ).expect("SLH-DSA suite exists");
+        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192,
+    )
+    .expect("SLH-DSA suite exists");
 
     let keypair = KeyPair::generate(suite);
-    let credential = Credential::new_basic(
-        MemberId::generate(),
-        None,
-        &keypair,
-        suite
-    ).expect("create credential");
+    let credential = Credential::new_basic(MemberId::generate(), None, &keypair, suite)
+        .expect("create credential");
 
-    let key_package = KeyPackage::new(keypair, credential)
-        .expect("create key package");
+    let key_package = KeyPackage::new(keypair, credential).expect("create key package");
 
     // Should actually verify the signature, not just return true
     assert!(
@@ -64,19 +55,15 @@ fn test_slh_dsa_keypackage_verification_valid() {
 #[test]
 fn test_slh_dsa_keypackage_verification_tampered_signature() {
     let suite = CipherSuite::from_id(
-        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192
-    ).expect("SLH-DSA suite exists");
+        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192,
+    )
+    .expect("SLH-DSA suite exists");
 
     let keypair = KeyPair::generate(suite);
-    let credential = Credential::new_basic(
-        MemberId::generate(),
-        None,
-        &keypair,
-        suite
-    ).expect("create credential");
+    let credential = Credential::new_basic(MemberId::generate(), None, &keypair, suite)
+        .expect("create credential");
 
-    let mut key_package = KeyPackage::new(keypair, credential)
-        .expect("create key package");
+    let mut key_package = KeyPackage::new(keypair, credential).expect("create key package");
 
     // Tamper with the signature by modifying its bytes
     let tampered_sig = {
@@ -90,10 +77,8 @@ fn test_slh_dsa_keypackage_verification_tampered_signature() {
         use saorsa_mls::crypto::Signature;
         use saorsa_pqc::api::{SlhDsaSignature, SlhDsaVariant};
 
-        let slh_sig = SlhDsaSignature::from_bytes(
-            SlhDsaVariant::Sha2_128f,
-            &tampered
-        ).expect("tampered bytes should parse");
+        let slh_sig = SlhDsaSignature::from_bytes(SlhDsaVariant::Sha2_128f, &tampered)
+            .expect("tampered bytes should parse");
 
         saorsa_mls::crypto::DebugSignature(Signature::SlhDsa(slh_sig))
     };
@@ -112,19 +97,15 @@ fn test_slh_dsa_keypackage_verification_tampered_signature() {
 #[test]
 fn test_slh_dsa_keypackage_verification_tampered_data() {
     let suite = CipherSuite::from_id(
-        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192
-    ).expect("SLH-DSA suite exists");
+        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192,
+    )
+    .expect("SLH-DSA suite exists");
 
     let keypair = KeyPair::generate(suite);
-    let credential = Credential::new_basic(
-        MemberId::generate(),
-        None,
-        &keypair,
-        suite
-    ).expect("create credential");
+    let credential = Credential::new_basic(MemberId::generate(), None, &keypair, suite)
+        .expect("create credential");
 
-    let mut key_package = KeyPackage::new(keypair, credential)
-        .expect("create key package");
+    let mut key_package = KeyPackage::new(keypair, credential).expect("create key package");
 
     // Tamper with the agreement key (part of signed data)
     key_package.agreement_key.push(0xFF);
@@ -140,20 +121,15 @@ fn test_slh_dsa_keypackage_verification_tampered_data() {
 /// Test ML-DSA KeyPackage with tampered data
 #[test]
 fn test_ml_dsa_keypackage_verification_tampered_data() {
-    let suite = CipherSuite::from_id(
-        CipherSuiteId::SPEC2_MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65
-    ).expect("ML-DSA suite exists");
+    let suite =
+        CipherSuite::from_id(CipherSuiteId::SPEC2_MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65)
+            .expect("ML-DSA suite exists");
 
     let keypair = KeyPair::generate(suite);
-    let credential = Credential::new_basic(
-        MemberId::generate(),
-        None,
-        &keypair,
-        suite
-    ).expect("create credential");
+    let credential = Credential::new_basic(MemberId::generate(), None, &keypair, suite)
+        .expect("create credential");
 
-    let mut key_package = KeyPackage::new(keypair, credential)
-        .expect("create key package");
+    let mut key_package = KeyPackage::new(keypair, credential).expect("create key package");
 
     // Tamper with the verifying key
     if let Some(byte) = key_package.verifying_key.get_mut(0) {
@@ -172,16 +148,13 @@ fn test_ml_dsa_keypackage_verification_tampered_data() {
 #[test]
 fn test_credential_verification_with_slh_dsa() {
     let suite = CipherSuite::from_id(
-        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192
-    ).expect("SLH-DSA suite exists");
+        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192,
+    )
+    .expect("SLH-DSA suite exists");
 
     let keypair = KeyPair::generate(suite);
-    let credential = Credential::new_basic(
-        MemberId::generate(),
-        None,
-        &keypair,
-        suite
-    ).expect("create credential");
+    let credential = Credential::new_basic(MemberId::generate(), None, &keypair, suite)
+        .expect("create credential");
 
     // Verify credential against keypair
     assert!(
@@ -194,18 +167,15 @@ fn test_credential_verification_with_slh_dsa() {
 #[test]
 fn test_credential_verification_wrong_keypair() {
     let suite = CipherSuite::from_id(
-        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192
-    ).expect("SLH-DSA suite exists");
+        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192,
+    )
+    .expect("SLH-DSA suite exists");
 
     let keypair1 = KeyPair::generate(suite);
     let keypair2 = KeyPair::generate(suite);
 
-    let credential = Credential::new_basic(
-        MemberId::generate(),
-        None,
-        &keypair1,
-        suite
-    ).expect("create credential");
+    let credential = Credential::new_basic(MemberId::generate(), None, &keypair1, suite)
+        .expect("create credential");
 
     // Verify with wrong keypair should fail
     assert!(
@@ -220,13 +190,14 @@ fn test_signature_type_safety() {
     // This test verifies that our type system prevents signature confusion
     // The Signature enum ensures we can't accidentally verify wrong signature type
 
-    let ml_dsa_suite = CipherSuite::from_id(
-        CipherSuiteId::SPEC2_MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65
-    ).expect("ML-DSA suite exists");
+    let ml_dsa_suite =
+        CipherSuite::from_id(CipherSuiteId::SPEC2_MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65)
+            .expect("ML-DSA suite exists");
 
     let slh_dsa_suite = CipherSuite::from_id(
-        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192
-    ).expect("SLH-DSA suite exists");
+        CipherSuiteId::SPEC2_MLS_192_MLKEM1024_CHACHA20POLY1305_SHA384_SLHDSA192,
+    )
+    .expect("SLH-DSA suite exists");
 
     let ml_dsa_keypair = KeyPair::generate(ml_dsa_suite);
     let slh_dsa_keypair = KeyPair::generate(slh_dsa_suite);

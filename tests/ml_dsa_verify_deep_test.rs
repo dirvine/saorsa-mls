@@ -15,12 +15,14 @@ fn test_mldsa_verify_returns_ok_bool() {
     let ml_dsa = MlDsa::new(MlDsaVariant::MlDsa65);
 
     // Generate keypair
-    let (verifying_key, signing_key) = ml_dsa.generate_keypair()
+    let (verifying_key, signing_key) = ml_dsa
+        .generate_keypair()
         .expect("keypair generation should succeed");
 
     // Sign a message
     let message = b"Test message";
-    let signature = ml_dsa.sign(&signing_key, message)
+    let signature = ml_dsa
+        .sign(&signing_key, message)
         .expect("signing should succeed");
 
     // Test 1: Verify with correct message
@@ -38,24 +40,37 @@ fn test_mldsa_verify_returns_ok_bool() {
     let result_wrong = ml_dsa.verify(&verifying_key, wrong_message, &signature);
 
     println!("Verify with wrong message: {:?}", result_wrong);
-    assert!(result_wrong.is_ok(), "Verification should not error even with wrong message");
+    assert!(
+        result_wrong.is_ok(),
+        "Verification should not error even with wrong message"
+    );
 
     let is_valid_wrong = result_wrong.unwrap();
     println!("Is signature valid for wrong message? {}", is_valid_wrong);
-    assert!(!is_valid_wrong, "Signature should be INVALID for wrong message");
+    assert!(
+        !is_valid_wrong,
+        "Signature should be INVALID for wrong message"
+    );
 
     // Test 3: Generate another keypair and try to verify with wrong key
-    let (verifying_key_2, _signing_key_2) = ml_dsa.generate_keypair()
+    let (verifying_key_2, _signing_key_2) = ml_dsa
+        .generate_keypair()
         .expect("second keypair generation");
 
     let result_wrong_key = ml_dsa.verify(&verifying_key_2, message, &signature);
 
     println!("Verify with wrong key: {:?}", result_wrong_key);
-    assert!(result_wrong_key.is_ok(), "Verification should not error with wrong key");
+    assert!(
+        result_wrong_key.is_ok(),
+        "Verification should not error with wrong key"
+    );
 
     let is_valid_wrong_key = result_wrong_key.unwrap();
     println!("Is signature valid with wrong key? {}", is_valid_wrong_key);
-    assert!(!is_valid_wrong_key, "Signature should be INVALID with wrong key");
+    assert!(
+        !is_valid_wrong_key,
+        "Signature should be INVALID with wrong key"
+    );
 }
 
 #[test]
@@ -86,14 +101,25 @@ fn test_is_ok_vs_unwrap() {
     let wrong_msg_result_clone = wrong_msg_result.clone();
 
     println!("Wrong message - .is_ok(): {}", wrong_msg_result.is_ok()); // TRUE (bug!)
-    println!("Wrong message - .unwrap(): {}", wrong_msg_result_clone.unwrap()); // FALSE (correct!)
+    println!(
+        "Wrong message - .unwrap(): {}",
+        wrong_msg_result_clone.unwrap()
+    ); // FALSE (correct!)
 
     // The bug: is_ok() returns true because the operation succeeded (no error occurred)
     // But this doesn't mean the signature is valid!
-    assert!(ml_dsa.verify(&verifying_key, wrong_message, &signature).is_ok(),
-        "Operation succeeded (no error) - THIS IS THE BUG!");
+    assert!(
+        ml_dsa
+            .verify(&verifying_key, wrong_message, &signature)
+            .is_ok(),
+        "Operation succeeded (no error) - THIS IS THE BUG!"
+    );
 
     // The correct check: unwrap() gives us the bool value (false for invalid signature)
-    assert!(!ml_dsa.verify(&verifying_key, wrong_message, &signature).unwrap(),
-        "Signature is invalid for wrong message");
+    assert!(
+        !ml_dsa
+            .verify(&verifying_key, wrong_message, &signature)
+            .unwrap(),
+        "Signature is invalid for wrong message"
+    );
 }

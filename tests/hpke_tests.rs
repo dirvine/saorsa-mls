@@ -15,8 +15,9 @@ use saorsa_mls::crypto::{CipherSuite, CipherSuiteId, KeyPair};
 /// Test basic HPKE seal/open with ML-KEM768
 #[test]
 fn test_hpke_seal_open_mlkem768() {
-    let suite = CipherSuite::from_id(CipherSuiteId::MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65)
-        .expect("valid ciphersuite");
+    let suite =
+        CipherSuite::from_id(CipherSuiteId::MLS_128_MLKEM768_CHACHA20POLY1305_SHA256_MLDSA65)
+            .expect("valid ciphersuite");
 
     // Generate recipient keypair
     let recipient = KeyPair::generate(suite);
@@ -201,7 +202,10 @@ fn test_hpke_large_plaintext() {
         .hpke_open(&encapped_key, &ciphertext, b"", b"")
         .expect("Open should succeed");
 
-    assert_eq!(decrypted, plaintext, "Large plaintext should decrypt correctly");
+    assert_eq!(
+        decrypted, plaintext,
+        "Large plaintext should decrypt correctly"
+    );
 }
 
 /// Test HPKE export with different contexts produces different keys
@@ -264,22 +268,20 @@ fn test_hpke_export_different_lengths() {
 /// Integration test: Use HPKE to encrypt MLS Welcome message secrets
 #[test]
 fn test_hpke_welcome_message_integration() {
-    use saorsa_mls::{GroupConfig, MlsGroup, MemberId, MemberIdentity};
+    use saorsa_mls::{GroupConfig, MemberId, MemberIdentity, MlsGroup};
 
     let rt = tokio::runtime::Runtime::new().expect("create runtime");
     rt.block_on(async {
         // Create group creator
         let config = GroupConfig::default();
-        let creator = MemberIdentity::generate(MemberId::generate())
-            .expect("generate creator identity");
+        let creator =
+            MemberIdentity::generate(MemberId::generate()).expect("generate creator identity");
 
-        let mut group = MlsGroup::new(config, creator)
-            .await
-            .expect("create group");
+        let mut group = MlsGroup::new(config, creator).await.expect("create group");
 
         // Create new member
-        let new_member = MemberIdentity::generate(MemberId::generate())
-            .expect("generate member identity");
+        let new_member =
+            MemberIdentity::generate(MemberId::generate()).expect("generate member identity");
 
         // Add member (this should use HPKE for Welcome message)
         let welcome = group
@@ -288,8 +290,10 @@ fn test_hpke_welcome_message_integration() {
             .expect("add member should succeed");
 
         // Verify welcome message has encrypted secrets
-        assert!(!welcome.secrets.is_empty(),
-            "Welcome should contain HPKE-encrypted secrets");
+        assert!(
+            !welcome.secrets.is_empty(),
+            "Welcome should contain HPKE-encrypted secrets"
+        );
 
         // New member should be able to decrypt welcome
         // (This would require Welcome processing implementation)
