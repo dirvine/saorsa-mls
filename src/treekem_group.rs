@@ -857,6 +857,39 @@ impl TreeKemGroup {
         self.tree.active_leaf_count()
     }
 
+    /// Signature verifying key bytes for the active member at `leaf`.
+    ///
+    /// Returns `None` for blanked or out-of-range leaves. This exposes only
+    /// public leaf credential material and is intended for applications that
+    /// maintain an external roster and need to verify that a roster identity is
+    /// bound to the TreeKEM leaf they are about to remove.
+    #[must_use]
+    pub fn leaf_verifying_key(&self, leaf: u32) -> Option<Vec<u8>> {
+        self.tree.leaf_verifying_key(leaf).map(<[u8]>::to_vec)
+    }
+
+    /// KEM agreement public key bytes for the active member at `leaf`.
+    ///
+    /// Returns `None` for blanked or out-of-range leaves. Together with
+    /// [`Self::leaf_verifying_key`], this is the stable public identity pair
+    /// used by TreeKEM to match re-derived key packages to leaves.
+    #[must_use]
+    pub fn leaf_agreement_key(&self, leaf: u32) -> Option<Vec<u8>> {
+        self.tree
+            .leaf(leaf)
+            .map(|data| data.key_package.agreement_key.clone())
+    }
+
+    /// Find the active leaf whose stable public keys match `key_package`.
+    ///
+    /// This intentionally matches only the verifying and agreement public keys:
+    /// ML-DSA signing is randomized, so re-derived key packages may not be
+    /// byte-identical even though they represent the same member identity.
+    #[must_use]
+    pub fn find_leaf_by_key_package(&self, key_package: &KeyPackage) -> Option<u32> {
+        self.tree.find_leaf(key_package)
+    }
+
     fn reconstruct_signature_for(suite: CipherSuite, bytes: &[u8]) -> Result<Signature> {
         if suite.uses_slh_dsa() {
             let sig = SlhDsaSignature::from_bytes(suite.slh_dsa_variant()?, bytes)
@@ -1198,6 +1231,36 @@ mod tests {
             bob_group.decrypt_message(&ct),
             Err(MlsError::InvalidEpoch { .. })
         ));
+    }
+
+    #[test]
+    fn leaf_public_key_inspection_reports_only_active_leaves() {
+        let suite = CipherSuite::default();
+        let alice = identity(suite);
+        let bob = identity(suite);
+        let mut alice_group = TreeKemGroup::create(b"room".to_vec(), alice).unwrap();
+        let (_c, w) = alice_group.add_member(&bob.key_package).unwrap();
+        let bob_group = TreeKemGroup::from_welcome(&w, bob.clone()).unwrap();
+        let bob_leaf = bob_group.own_leaf().unwrap();
+
+        assert_eq!(
+            alice_group.leaf_verifying_key(bob_leaf).as_deref(),
+            Some(bob.key_package.verifying_key.as_slice())
+        );
+        assert_eq!(
+            alice_group.leaf_agreement_key(bob_leaf).as_deref(),
+            Some(bob.key_package.agreement_key.as_slice())
+        );
+        assert_eq!(
+            alice_group.find_leaf_by_key_package(&bob.key_package),
+            Some(bob_leaf)
+        );
+        assert!(alice_group.leaf_verifying_key(u32::MAX).is_none());
+        assert!(alice_group.leaf_agreement_key(u32::MAX).is_none());
+
+        alice_group.remove_member(bob_leaf).unwrap();
+        assert!(alice_group.leaf_verifying_key(bob_leaf).is_none());
+        assert!(alice_group.leaf_agreement_key(bob_leaf).is_none());
     }
 
     #[test]
